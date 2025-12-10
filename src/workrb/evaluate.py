@@ -168,7 +168,7 @@ def evaluate_multiple_models(
         logger.info(f"{'=' * 60}")
 
         try:
-            results = evaluate(tasks, model, **run_kwargs)
+            results = evaluate(model=model, tasks=tasks, **run_kwargs)
             all_results[model.name] = results
         except Exception as e:
             logger.error(f"Error running model {model.name}: {e}")
