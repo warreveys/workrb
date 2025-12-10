@@ -148,7 +148,8 @@ def evaluate_multiple_models(
     # Input checks
     model_names = [model.name for model in models]
     model_name_counts = Counter(model_names)
-    assert sum(model_name_counts.values()) == len(model_names), (
+    duplicates = [n for n, c in model_name_counts.items() if c > 1]
+    assert not duplicates, (
         f"All models must have unique names, "
         f"duplicates found: {', '.join(n for n, c in model_name_counts.items() if c > 1)}"
     )
