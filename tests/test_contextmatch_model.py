@@ -1,3 +1,4 @@
+import pytest
 import torch
 
 from workrb.models.bi_encoder import ConTeXTMatchModel
@@ -106,3 +107,72 @@ class TestConTeXTMatchModelUsage:
 
         assert scores.shape == (len(texts), len(targets))
         assert torch.isfinite(scores).all()
+
+
+class TestConTeXTMatchModelTechSkillExtraction:
+    """Test ConTeXTMatchModel performance on TECH skill extraction test set."""
+
+    def test_tech_skill_extraction_benchmark_metrics(self):
+        """
+        Test that ConTeXTMatchModel achieves results close to paper-reported metrics.
+
+        Paper reported on TECH skill extraction test set:
+        - Mean Reciprocal Rank (MRR): 0.632
+        - R-Precision@1 (RP@1): 50.99%
+        - R-Precision@5 (RP@5): 63.98%
+        - R-Precision@10 (RP@10): 73.99%
+        """
+        from workrb.tasks import TechSkillExtractRanking
+        from workrb.tasks.abstract.base import DatasetSplit, Language
+
+        # Initialize model and task
+        model = ConTeXTMatchModel()
+        task = TechSkillExtractRanking(split=DatasetSplit.TEST, languages=[Language.EN])
+
+        # Evaluate model on the task with the metrics from the paper
+        metrics = ["mrr", "rp@1", "rp@5", "rp@10"]
+        results = task.evaluate(model=model, metrics=metrics, language=Language.EN)
+
+        # Paper-reported values (RP metrics are percentages, convert to decimals)
+        expected_mrr = 0.632
+        expected_rp1 = 50.99 / 100.0  # Convert percentage to decimal
+        expected_rp5 = 63.98 / 100.0
+        expected_rp10 = 73.99 / 100.0
+
+        # Allow a little tolerance for floating point precision
+        mrr_tolerance = 0.05
+        rp_tolerance = 0.05
+
+        # Check MRR
+        actual_mrr = results["mrr"]
+        assert actual_mrr == pytest.approx(
+            expected_mrr, abs=mrr_tolerance
+        ), f"MRR: expected {expected_mrr:.3f}, got {actual_mrr:.3f}"
+
+        # Check RP@1
+        actual_rp1 = results["rp@1"]
+        assert actual_rp1 == pytest.approx(
+            expected_rp1, abs=rp_tolerance
+        ), f"RP@1: expected {expected_rp1:.3f}, got {actual_rp1:.3f}"
+
+        # Check RP@5
+        actual_rp5 = results["rp@5"]
+        assert actual_rp5 == pytest.approx(
+            expected_rp5, abs=rp_tolerance
+        ), f"RP@5: expected {expected_rp5:.3f}, got {actual_rp5:.3f}"
+
+        # Check RP@10
+        actual_rp10 = results["rp@10"]
+        assert actual_rp10 == pytest.approx(
+            expected_rp10, abs=rp_tolerance
+        ), f"RP@10: expected {expected_rp10:.3f}, got {actual_rp10:.3f}"
+
+        # Print results for debugging
+        print(f"\n{'=' * 60}")
+        print("TECH Skill Extraction Test Set Results")
+        print(f"{'=' * 60}")
+        print(f"MRR:     {actual_mrr:.4f} (expected: {expected_mrr:.4f})")
+        print(f"RP@1:    {actual_rp1:.4f} (expected: {expected_rp1:.4f})")
+        print(f"RP@5:    {actual_rp5:.4f} (expected: {expected_rp5:.4f})")
+        print(f"RP@10:   {actual_rp10:.4f} (expected: {expected_rp10:.4f})")
+        print(f"{'=' * 60}")
