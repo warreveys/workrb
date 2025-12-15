@@ -1,7 +1,9 @@
-import pytest
+import pytest  # noqa: D100
 import torch
 
 from workrb.models.bi_encoder import ConTeXTMatchModel
+from workrb.tasks import TechSkillExtractRanking
+from workrb.tasks.abstract.base import DatasetSplit, Language
 from workrb.types import ModelInputType
 
 
@@ -122,9 +124,6 @@ class TestConTeXTMatchModelTechSkillExtraction:
         - R-Precision@5 (RP@5): 63.98%
         - R-Precision@10 (RP@10): 73.99%
         """
-        from workrb.tasks import TechSkillExtractRanking
-        from workrb.tasks.abstract.base import DatasetSplit, Language
-
         # Initialize model and task
         model = ConTeXTMatchModel()
         task = TechSkillExtractRanking(split=DatasetSplit.TEST, languages=[Language.EN])
@@ -145,24 +144,24 @@ class TestConTeXTMatchModelTechSkillExtraction:
 
         # Check MRR
         actual_mrr = results["mrr"]
-        assert actual_mrr == pytest.approx(
-            expected_mrr, abs=mrr_tolerance
-        ), f"MRR: expected {expected_mrr:.3f}, got {actual_mrr:.3f}"
+        assert actual_mrr == pytest.approx(expected_mrr, abs=mrr_tolerance), (
+            f"MRR: expected {expected_mrr:.3f}, got {actual_mrr:.3f}"
+        )
 
         # Check RP@1
         actual_rp1 = results["rp@1"]
-        assert actual_rp1 == pytest.approx(
-            expected_rp1, abs=rp_tolerance
-        ), f"RP@1: expected {expected_rp1:.3f}, got {actual_rp1:.3f}"
+        assert actual_rp1 == pytest.approx(expected_rp1, abs=rp_tolerance), (
+            f"RP@1: expected {expected_rp1:.3f}, got {actual_rp1:.3f}"
+        )
 
         # Check RP@5
         actual_rp5 = results["rp@5"]
-        assert actual_rp5 == pytest.approx(
-            expected_rp5, abs=rp_tolerance
-        ), f"RP@5: expected {expected_rp5:.3f}, got {actual_rp5:.3f}"
+        assert actual_rp5 == pytest.approx(expected_rp5, abs=rp_tolerance), (
+            f"RP@5: expected {expected_rp5:.3f}, got {actual_rp5:.3f}"
+        )
 
         # Check RP@10
         actual_rp10 = results["rp@10"]
-        assert actual_rp10 == pytest.approx(
-            expected_rp10, abs=rp_tolerance
-        ), f"RP@10: expected {expected_rp10:.3f}, got {actual_rp10:.3f}"
+        assert actual_rp10 == pytest.approx(expected_rp10, abs=rp_tolerance), (
+            f"RP@10: expected {expected_rp10:.3f}, got {actual_rp10:.3f}"
+        )
