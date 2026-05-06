@@ -7,6 +7,7 @@ using unified BenchmarkResults storage for both checkpoints and final results.
 
 import json
 import logging
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
@@ -133,6 +134,47 @@ class BenchmarkConfig:
     def get_results_path(self) -> Path:
         """Get the path where final results should be saved."""
         return self.get_output_path() / "results.json"
+
+    def get_rankings_dir(self) -> Path:
+        """Get the directory where per-dataset ranking artifacts are saved.
+
+        Rankings are nested under a sanitized model-name directory so that
+        running multiple models into the same ``output_folder`` cannot clobber
+        each other's ranking files.
+        """
+        safe_model_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.model_name).strip("_")
+        return self.get_output_path() / "rankings" / safe_model_name
+
+    def get_task_rankings_path(self, task_name: str, dataset_id: str) -> Path:
+        """Get the output path for one task/dataset ranking artifact."""
+        safe_task_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_name).strip("_")
+        safe_dataset_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_")
+        filename = f"{safe_task_name}__{safe_dataset_id}.json"
+        return self.get_rankings_dir() / filename
+
+    def save_rankings_artifact(
+        self,
+        task_name: str,
+        dataset_id: str,
+        scores_by_target: dict[str, list[float]],
+        num_queries: int,
+        num_targets: int,
+    ) -> Path:
+        """Save full ranking scores for one dataset as a JSON artifact."""
+        rankings_path = self.get_task_rankings_path(task_name=task_name, dataset_id=dataset_id)
+        rankings_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "model_name": self.model_name,
+            "task_name": task_name,
+            "dataset_id": dataset_id,
+            "num_queries": num_queries,
+            "num_targets": num_targets,
+            "scores_by_target": scores_by_target,
+        }
+        with open(rankings_path, "w") as f:
+            json.dump(payload, f, indent=2)
+        logger.debug(f"Ranking artifact saved to {rankings_path}")
+        return rankings_path
 
     def has_checkpoint(self) -> bool:
         """Check if a checkpoint exists."""
