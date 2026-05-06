@@ -14,6 +14,7 @@ def calculate_ranking_metrics(
         "rp@10",
     ),
     pos_label_relevance: list[list[float]] | None = None,
+    binary_relevance_threshold: float = 1e-9,
 ) -> dict[str, float]:
     """Calculate ranking metrics for evaluation.
 
@@ -28,9 +29,15 @@ def calculate_ranking_metrics(
     pos_label_relevance : list[list[float]] or None, optional
         Optional graded relevance per positive, aligned 1-to-1 with
         ``pos_label_idxs``. When ``None``, every positive is treated as relevance 1.0
-        (binary fallback, identical to current behavior). Only consulted by graded
-        metrics (``ndcg``); binary metrics (``map``, ``mrr``, ``recall@k``,
-        ``hit@k``, ``rp@k``) ignore it.
+        (binary fallback, identical to current behavior). Used by graded metrics
+        (``ndcg``); binary metrics (``map``, ``mrr``, ``recall@k``, ``hit@k``,
+        ``rp@k``) consult it only to apply ``binary_relevance_threshold``.
+    binary_relevance_threshold : float, optional
+        Minimum graded relevance for an item to count as a positive for binary
+        metrics. Items with relevance below this threshold are dropped from the
+        binary positive set but still contribute to graded metrics. Ignored when
+        ``pos_label_relevance`` is ``None``. Defaults to ``1e-9``: any non-zero
+        grade counts, matching the current binary-only behavior.
 
     Returns
     -------
@@ -43,6 +50,21 @@ def calculate_ranking_metrics(
 
     # Sort indices by prediction scores (descending)
     sorted_indices = np.argsort(-prediction_matrix, axis=1)
+
+    # When graded relevance is provided, derive the binary positive set by
+    # thresholding so binary metrics (map/mrr/recall/hit/rp) consume only items
+    # with relevance >= threshold. Graded nDCG continues to use the full list.
+    if pos_label_relevance is None:
+        binary_pos_label_idxs = pos_label_idxs
+    else:
+        binary_pos_label_idxs = [
+            [
+                idx
+                for idx, rel in zip(idx_list, rel_list, strict=True)
+                if rel >= binary_relevance_threshold
+            ]
+            for idx_list, rel_list in zip(pos_label_idxs, pos_label_relevance, strict=True)
+        ]
 
     results = {}
 
@@ -61,22 +83,22 @@ def calculate_ranking_metrics(
         base_metric, k = _metric_k_split(metric)
 
         if metric == "map":
-            results[metric] = _calculate_map(sorted_indices, pos_label_idxs)
+            results[metric] = _calculate_map(sorted_indices, binary_pos_label_idxs)
 
         elif base_metric == "rp":
             assert k is not None, "k must be provided for rp@k metrics"
-            results[metric] = _calculate_rp_at_k(sorted_indices, pos_label_idxs, k)
+            results[metric] = _calculate_rp_at_k(sorted_indices, binary_pos_label_idxs, k)
 
         elif metric == "mrr":
-            results[metric] = _calculate_mrr(sorted_indices, pos_label_idxs)
+            results[metric] = _calculate_mrr(sorted_indices, binary_pos_label_idxs)
 
         elif base_metric == "recall":
             assert k is not None, "k must be provided for recall@k metrics"
-            results[metric] = _calculate_recall_at_k(sorted_indices, pos_label_idxs, k)
+            results[metric] = _calculate_recall_at_k(sorted_indices, binary_pos_label_idxs, k)
 
         elif base_metric == "hit":
             assert k is not None, "k must be provided for hit@k metrics"
-            results[metric] = _calculate_hit_at_k(sorted_indices, pos_label_idxs, k)
+            results[metric] = _calculate_hit_at_k(sorted_indices, binary_pos_label_idxs, k)
 
         elif base_metric == "ndcg":
             cutoff = k if k is not None else sorted_indices.shape[1]
@@ -235,8 +257,7 @@ def _calculate_ndcg(
             relevance_by_idx = dict.fromkeys(pos_labels, 1.0)
         else:
             relevance_by_idx = {
-                idx: float(rel)
-                for idx, rel in zip(pos_labels, pos_label_relevance[i], strict=True)
+                idx: float(rel) for idx, rel in zip(pos_labels, pos_label_relevance[i], strict=True)
             }
 
         cutoff = min(k, len(sorted_indices[i]))

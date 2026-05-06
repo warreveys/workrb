@@ -2,7 +2,7 @@
 
 import pytest
 
-from workrb.tasks.abstract.ranking_base import DuplicateStrategy, RankingDataset
+from workrb.tasks.abstract.ranking_base import DuplicateStrategy, RankingDataset, RankingTask
 
 
 class TestDuplicateStrategyRaise:
@@ -321,3 +321,12 @@ class TestTargetRelevance:
         pairs = dict(zip(ds.target_indices[0], ds.target_relevance[0], strict=True))
         # idx 1 appears in both queries; relevance from the first (2.0) wins, not 9.0
         assert pairs == {0: 3.0, 1: 2.0, 2: 1.0}
+
+
+class TestBinaryRelevanceThresholdDefault:
+    """RankingTask exposes binary_relevance_threshold with a sensible default."""
+
+    def test_default_value_is_small_positive(self):
+        """Default threshold treats any non-zero grade as positive (current behavior)."""
+        # Read directly off the abstract class attribute — no instantiation needed.
+        assert RankingTask.binary_relevance_threshold.fget(None) == pytest.approx(1e-9)

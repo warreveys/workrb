@@ -10,8 +10,13 @@ How a graded task differs from a binary one:
    1-to-1 with ``target_indices``. Items NOT listed in ``target_indices`` are
    implicitly grade 0 (irrelevant).
 2. Add ``ndcg@k`` to ``default_metrics``. The (2^rel - 1) gain in nDCG uses the
-   grades; binary metrics (``map``, ``mrr``, ``recall@k``, ``hit@k``, ``rp@k``)
-   ignore them and treat every entry in ``target_indices`` as relevant=1.
+   grades.
+3. Optionally override ``binary_relevance_threshold`` on the task to control
+   which graded items count as positives for binary metrics (``map``, ``mrr``,
+   ``recall@k``, ``hit@k``, ``rp@k``). Items with relevance >= threshold are
+   positives; items below are dropped from the binary positive set but still
+   contribute to nDCG. Default is ``1e-9``, which keeps every listed item as
+   a positive (matches the binary-only behavior).
 
 The grading scale is up to the task. Common choices: {1, 2, 3} (this example),
 {1, 2, 3, 4} (TREC-style), or fractional in [0, 1]. Values must be non-negative.
@@ -53,9 +58,16 @@ class GradedJob2SkillTask(workrb.tasks.RankingTask):
     @property
     def default_metrics(self) -> list[str]:
         # nDCG@k is the headline metric here. MAP/MRR/recall are kept as a
-        # binary sanity check: they treat every graded positive as relevant=1
-        # and ignore the grades, so they still produce well-defined numbers.
+        # binary sanity check on the high-grade subset (see the threshold
+        # below): they treat every passing graded positive as relevant=1.
         return ["ndcg@5", "ndcg@10", "map", "mrr", "recall@5"]
+
+    @property
+    def binary_relevance_threshold(self) -> float:
+        # Only "secondary" (grade 2) and "primary" (grade 3) skills count as
+        # positives for binary metrics; "nice-to-have" (grade 1) items drop
+        # out of MAP/MRR/recall but still contribute to nDCG.
+        return 2.0
 
     @property
     def task_group(self) -> RankingTaskGroup:

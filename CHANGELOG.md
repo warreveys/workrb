@@ -8,6 +8,11 @@
   metrics (``map``, ``mrr``, ``recall@k``, ``hit@k``, ``rp@k``) ignore the
   field. Binary nDCG behavior is preserved when ``target_relevance`` is
   ``None``. See ``examples/custom_task_graded_relevance_example.py``.
+- ``RankingTask.binary_relevance_threshold`` (default ``1e-9``) lets a graded
+  task choose which grades count as positives for binary metrics. Items with
+  relevance below the threshold are dropped from the binary positive set but
+  still contribute to graded metrics like ``ndcg@k``. Has no effect when
+  ``target_relevance`` is ``None``.
 
 ## v0.5.1 (2026-03-13)
 

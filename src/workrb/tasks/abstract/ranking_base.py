@@ -321,6 +321,25 @@ class RankingTask(Task):
     def default_metrics(self) -> list[str]:
         return ["map", "rp@10", "mrr"]
 
+    @property
+    def binary_relevance_threshold(self) -> float:
+        """Minimum graded relevance for an item to count as a positive.
+
+        Used by binary metrics (``map``, ``mrr``, ``recall@k``, ``hit@k``,
+        ``rp@k``) when the dataset provides ``target_relevance``: items with
+        relevance ``>= threshold`` are treated as positives, items below it
+        are dropped from the binary positive set but still contribute to
+        graded metrics such as ``ndcg@k``.
+
+        Default is ``1e-9`` so any listed item with a non-zero grade counts
+        as a positive — equivalent to today's behavior where every entry in
+        ``target_indices`` is a positive. Override on the task to express
+        a stricter threshold (e.g. ``2.0`` on a 0-3 scale).
+
+        Has no effect when ``target_relevance`` is ``None``.
+        """
+        return 1e-9
+
     def __init__(
         self,
         **kwargs,
@@ -425,12 +444,15 @@ class RankingTask(Task):
         if isinstance(prediction_matrix, torch.Tensor):
             prediction_matrix = prediction_matrix.cpu().float().numpy()
 
-        # Calculate metrics
+        # Calculate metrics. When the dataset provides graded relevance, binary
+        # metrics consume only positives with relevance >= binary_relevance_threshold;
+        # nDCG still sees the full graded label list.
         metric_results = calculate_ranking_metrics(
             prediction_matrix=prediction_matrix,
             pos_label_idxs=labels,
             metrics=metrics,
             pos_label_relevance=dataset.target_relevance,
+            binary_relevance_threshold=self.binary_relevance_threshold,
         )
 
         return metric_results
