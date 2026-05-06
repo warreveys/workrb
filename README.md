@@ -237,7 +237,7 @@ Each aggregation provides 95% confidence intervals (replace `mean` with `ci_marg
 | --- | --- |
 | `map` | Mean Average Precision |
 | `mrr` | Mean Reciprocal Rank |
-| `ndcg@k` | Normalized Discounted Cumulative Gain with support for top-k cutoff.|
+| `ndcg@k` | Normalized Discounted Cumulative Gain with support for top-k cutoff. Uses a (2^rel - 1) gain when the dataset provides graded `target_relevance`; falls back to binary positives otherwise. See `examples/custom_task_graded_relevance_example.py`. |
 | `recall@k` | Recall at k (e.g. `recall@5`, `recall@10`) |
 | `hit@k` | Hit rate at k — binary: is any relevant item in the top-k? |
 | `rp@k` | R-Precision at k — precision relative to total relevant items |
