@@ -100,6 +100,7 @@ class TinyDeterministicModel(ModelInterface):
 
 
 def test_evaluate_saves_rankings_artifact_when_enabled():
+    """evaluate(save_rankings=True) writes one JSON artifact per ranking dataset with full per-target scores."""
     output_folder = Path("tmp/rankings_artifact_test_enabled")
     if output_folder.exists():
         shutil.rmtree(output_folder, ignore_errors=True)
@@ -136,6 +137,7 @@ def test_evaluate_saves_rankings_artifact_when_enabled():
 
 
 def test_evaluate_does_not_save_rankings_artifact_by_default():
+    """evaluate() without save_rankings does not create a rankings/ directory."""
     output_folder = Path("tmp/rankings_artifact_test_disabled")
     if output_folder.exists():
         shutil.rmtree(output_folder, ignore_errors=True)
