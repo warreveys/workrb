@@ -494,11 +494,13 @@ def _run_pending_work(
                         dataset_id=dataset_id,
                         metrics=task_metrics,
                     )
+                    dataset = task.datasets[dataset_id]
                     rankings_path = config.save_rankings_artifact(
                         task_name=task.name,
                         dataset_id=dataset_id,
-                        scores_by_target=_build_scores_by_target(
-                            target_space=task.datasets[dataset_id].target_space,
+                        scores=_build_scores(
+                            query_texts=dataset.query_texts,
+                            target_space=dataset.target_space,
                             prediction_matrix=prediction_matrix,
                         ),
                         num_queries=prediction_matrix.shape[0],
@@ -540,12 +542,21 @@ def _run_pending_work(
     return results
 
 
-def _build_scores_by_target(
+def _build_scores(
+    query_texts: list[str],
     target_space: list[str],
     prediction_matrix: Any,
-) -> dict[str, list[float]]:
-    """Build a mapping from target text to its scores across all queries."""
-    return {
-        target_text: prediction_matrix[:, idx].tolist()
-        for idx, target_text in enumerate(target_space)
-    }
+) -> dict[str, dict[str, float]]:
+    """Build nested ``{query_text: {target_text: score}}`` from a prediction matrix.
+
+    Zero scores are omitted so sparse models (e.g. BM25) stay compact;
+    consumers should treat a missing target as a score of 0.
+    """
+    matrix = prediction_matrix.tolist()
+    scores: dict[str, dict[str, float]] = {}
+    for q_idx, query_text in enumerate(query_texts):
+        row = matrix[q_idx]
+        scores[query_text] = {
+            target_space[t_idx]: score for t_idx, score in enumerate(row) if score != 0
+        }
+    return scores

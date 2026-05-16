@@ -123,17 +123,24 @@ def test_evaluate_saves_rankings_artifact_when_enabled():
     with open(ranking_files[0]) as f:
         payload = json.load(f)
 
-    assert payload["model_name"] == model.name
-    assert payload["task_name"] == "Tiny Ranking Task"
-    assert payload["dataset_id"] == "en"
-    assert payload["num_queries"] == 2
-    assert payload["num_targets"] == 3
+    assert set(payload.keys()) == {model.name}
+    task_payload = payload[model.name]
+    assert set(task_payload.keys()) == {"Tiny Ranking Task"}
+    dataset_payload = task_payload["Tiny Ranking Task"]
+    assert set(dataset_payload.keys()) == {"en"}
 
-    scores_by_target = payload["scores_by_target"]
-    assert set(scores_by_target.keys()) == {"target_a", "target_b", "target_c"}
-    assert scores_by_target["target_a"] == pytest.approx([0.1, 0.4])
-    assert scores_by_target["target_b"] == pytest.approx([0.2, 0.5])
-    assert scores_by_target["target_c"] == pytest.approx([0.3, 0.6])
+    leaf = dataset_payload["en"]
+    assert leaf["num_queries"] == 2
+    assert leaf["num_targets"] == 3
+
+    scores = leaf["scores"]
+    assert set(scores.keys()) == {"query one", "query two"}
+    assert scores["query one"]["target_a"] == pytest.approx(0.1)
+    assert scores["query one"]["target_b"] == pytest.approx(0.2)
+    assert scores["query one"]["target_c"] == pytest.approx(0.3)
+    assert scores["query two"]["target_a"] == pytest.approx(0.4)
+    assert scores["query two"]["target_b"] == pytest.approx(0.5)
+    assert scores["query two"]["target_c"] == pytest.approx(0.6)
 
 
 def test_evaluate_does_not_save_rankings_artifact_by_default():

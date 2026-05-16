@@ -156,20 +156,31 @@ class BenchmarkConfig:
         self,
         task_name: str,
         dataset_id: str,
-        scores_by_target: dict[str, list[float]],
+        scores: dict[str, dict[str, float]],
         num_queries: int,
         num_targets: int,
     ) -> Path:
-        """Save full ranking scores for one dataset as a JSON artifact."""
+        """Save ranking scores for one dataset as a JSON artifact.
+
+        The on-disk shape mirrors the ground-truth schema:
+        ``{model_id: {task_id: {language: {num_queries, num_targets, scores}}}}``
+        where ``scores`` is ``{query_text: {target_text: score}}``. One file is
+        written per ``(task, dataset_id)`` so individual datasets can be loaded
+        without parsing the whole benchmark; consumers wanting a unified view
+        can merge files by deep-updating their nested dicts.
+        """
         rankings_path = self.get_task_rankings_path(task_name=task_name, dataset_id=dataset_id)
         rankings_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "model_name": self.model_name,
-            "task_name": task_name,
-            "dataset_id": dataset_id,
-            "num_queries": num_queries,
-            "num_targets": num_targets,
-            "scores_by_target": scores_by_target,
+            self.model_name: {
+                task_name: {
+                    dataset_id: {
+                        "num_queries": num_queries,
+                        "num_targets": num_targets,
+                        "scores": scores,
+                    }
+                }
+            }
         }
         with open(rankings_path, "w") as f:
             json.dump(payload, f, indent=2)
