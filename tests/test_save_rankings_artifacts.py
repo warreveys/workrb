@@ -1,6 +1,7 @@
-"""Tests for ranking artifact persistence in evaluate(save_rankings=...)."""
+"""Tests for ranking artifact persistence and replay."""
 
 import json
+import logging
 import shutil
 from pathlib import Path
 
@@ -9,6 +10,12 @@ import torch
 
 import workrb
 from workrb.models.base import ModelInterface
+from workrb.rankings import (
+    SCHEMA_HEADER_FIELDS,
+    SCHEMA_VERSION,
+    RankingsArtifactInvalid,
+    RankingsArtifactMissing,
+)
 from workrb.tasks.abstract.base import DatasetSplit, LabelType, Language
 from workrb.tasks.abstract.ranking_base import RankingDataset, RankingTask, RankingTaskGroup
 from workrb.types import ModelInputType
@@ -76,10 +83,10 @@ class TinyDeterministicModel(ModelInterface):
         query_input_type: ModelInputType,
         target_input_type: ModelInputType,
     ) -> torch.Tensor:
-        # 2 queries x 3 targets
+        # 2 queries x 3 targets, with one explicit zero to exercise sparsity
         return torch.tensor(
             [
-                [0.1, 0.2, 0.3],
+                [0.1, 0.0, 0.3],
                 [0.4, 0.5, 0.6],
             ],
             dtype=torch.float32,
@@ -99,65 +106,249 @@ class TinyDeterministicModel(ModelInterface):
         return None
 
 
-def test_evaluate_saves_rankings_artifact_when_enabled():
-    """evaluate(save_rankings=True) writes one JSON artifact per ranking dataset with full per-target scores."""
-    output_folder = Path("tmp/rankings_artifact_test_enabled")
-    if output_folder.exists():
-        shutil.rmtree(output_folder, ignore_errors=True)
+def _fresh_dir(name: str) -> Path:
+    path = Path("tmp") / name
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+    return path
 
+
+def _run_and_get_rankings_dir(output_folder: Path) -> Path:
     model = TinyDeterministicModel()
     tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
-
-    _ = workrb.evaluate(
+    workrb.evaluate(
         model=model,
         tasks=tasks,
         output_folder=str(output_folder),
         force_restart=True,
         save_rankings=True,
     )
+    return output_folder / "rankings" / model.name
 
-    rankings_dir = output_folder / "rankings" / model.name
+
+def test_evaluate_saves_rankings_artifact_with_new_schema():
+    """evaluate(save_rankings=True) writes one JSON per ranking dataset with header + sparse int-keyed scores."""
+    output_folder = _fresh_dir("rankings_artifact_test_enabled")
+    rankings_dir = _run_and_get_rankings_dir(output_folder)
+
     ranking_files = list(rankings_dir.glob("*.json"))
     assert len(ranking_files) == 1
 
     with open(ranking_files[0]) as f:
         payload = json.load(f)
 
-    assert set(payload.keys()) == {model.name}
-    task_payload = payload[model.name]
-    assert set(task_payload.keys()) == {"Tiny Ranking Task"}
-    dataset_payload = task_payload["Tiny Ranking Task"]
-    assert set(dataset_payload.keys()) == {"en"}
+    assert set(payload.keys()) == {"header", "scores"}
 
-    leaf = dataset_payload["en"]
-    assert leaf["num_queries"] == 2
-    assert leaf["num_targets"] == 3
+    header = payload["header"]
+    assert header["schema_version"] == 1
+    assert header["model_name"] == "tiny-deterministic-model"
+    assert header["task_name"] == "Tiny Ranking Task"
+    assert header["dataset_id"] == "en"
+    assert header["split"] == "test"
+    assert header["num_queries"] == 2
+    assert header["num_targets"] == 3
+    assert header["first_query_text"] == "query one"
+    assert header["last_query_text"] == "query two"
+    assert header["first_target_text"] == "target_a"
+    assert header["last_target_text"] == "target_c"
+    assert isinstance(header["workrb_version"], str) and header["workrb_version"]
 
-    scores = leaf["scores"]
-    assert set(scores.keys()) == {"query one", "query two"}
-    assert scores["query one"]["target_a"] == pytest.approx(0.1)
-    assert scores["query one"]["target_b"] == pytest.approx(0.2)
-    assert scores["query one"]["target_c"] == pytest.approx(0.3)
-    assert scores["query two"]["target_a"] == pytest.approx(0.4)
-    assert scores["query two"]["target_b"] == pytest.approx(0.5)
-    assert scores["query two"]["target_c"] == pytest.approx(0.6)
+    scores = payload["scores"]
+    assert set(scores.keys()) == {"0", "1"}
+    # Row 0 has a zero on target index 1 (sparse omission)
+    assert set(scores["0"].keys()) == {"0", "2"}
+    assert scores["0"]["0"] == pytest.approx(0.1)
+    assert scores["0"]["2"] == pytest.approx(0.3)
+    assert set(scores["1"].keys()) == {"0", "1", "2"}
+    assert scores["1"]["0"] == pytest.approx(0.4)
+    assert scores["1"]["1"] == pytest.approx(0.5)
+    assert scores["1"]["2"] == pytest.approx(0.6)
 
 
 def test_evaluate_does_not_save_rankings_artifact_by_default():
     """evaluate() without save_rankings does not create a rankings/ directory."""
-    output_folder = Path("tmp/rankings_artifact_test_disabled")
-    if output_folder.exists():
-        shutil.rmtree(output_folder, ignore_errors=True)
-
+    output_folder = _fresh_dir("rankings_artifact_test_disabled")
     model = TinyDeterministicModel()
     tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
-
-    _ = workrb.evaluate(
+    workrb.evaluate(
         model=model,
         tasks=tasks,
         output_folder=str(output_folder),
         force_restart=True,
     )
 
-    rankings_dir = output_folder / "rankings"
-    assert not rankings_dir.exists()
+    assert not (output_folder / "rankings").exists()
+
+
+def test_evaluate_rankings_roundtrip_parity():
+    """evaluate_rankings on saved artifacts reproduces metrics from evaluate(save_rankings=True)."""
+    write_dir = _fresh_dir("rankings_artifact_roundtrip_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+
+    with open(write_dir / "results.json") as f:
+        write_results = json.load(f)
+    write_metrics = write_results["task_results"]["Tiny Ranking Task"]["datasetid_results"]["en"][
+        "metrics_dict"
+    ]
+
+    read_output = _fresh_dir("rankings_artifact_roundtrip_read")
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    replay = workrb.evaluate_rankings(
+        rankings_dir=rankings_dir,
+        tasks=tasks,
+        output_folder=str(read_output),
+    )
+
+    replay_metrics = replay.task_results["Tiny Ranking Task"].datasetid_results["en"].metrics_dict
+    assert set(replay_metrics.keys()) == set(write_metrics.keys())
+    for key, value in write_metrics.items():
+        assert replay_metrics[key] == pytest.approx(value)
+
+
+def test_evaluate_rankings_missing_artifact_raises():
+    """A missing artifact file raises RankingsArtifactMissing."""
+    write_dir = _fresh_dir("rankings_artifact_missing_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+
+    # Remove the only artifact, then add a stub so the directory peek succeeds
+    # but the per-task lookup fails.
+    files = list(rankings_dir.glob("*.json"))
+    assert len(files) == 1
+    stub_payload = json.loads(files[0].read_text())
+    files[0].unlink()
+    decoy = rankings_dir / "Some_Other_Task__xx.json"
+    decoy.write_text(json.dumps(stub_payload))
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_missing_read")
+    with pytest.raises(RankingsArtifactMissing):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def _hand_edit_header(rankings_dir: Path, **header_overrides) -> Path:
+    files = list(rankings_dir.glob("*.json"))
+    assert len(files) == 1
+    path = files[0]
+    payload = json.loads(path.read_text())
+    payload["header"].update(header_overrides)
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_evaluate_rankings_size_mismatch_raises():
+    write_dir = _fresh_dir("rankings_artifact_size_mismatch_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    _hand_edit_header(rankings_dir, num_queries=99)
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_size_mismatch_read")
+    with pytest.raises(RankingsArtifactInvalid, match="num_queries"):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def test_evaluate_rankings_canary_mismatch_raises():
+    write_dir = _fresh_dir("rankings_artifact_canary_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    _hand_edit_header(rankings_dir, first_query_text="this is not the original query")
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_canary_read")
+    with pytest.raises(RankingsArtifactInvalid, match="first_query_text"):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def test_evaluate_rankings_split_mismatch_raises():
+    """An artifact written for one split cannot be replayed against another."""
+    write_dir = _fresh_dir("rankings_artifact_split_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    _hand_edit_header(rankings_dir, split="val")
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_split_read")
+    with pytest.raises(RankingsArtifactInvalid, match="split"):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def test_writer_header_matches_pinned_schema():
+    """The writer must emit exactly the header fields pinned in SCHEMA_HEADER_FIELDS.
+
+    This is the gate against silently changing the on-disk schema. If you add,
+    remove, or rename a header field, bump SCHEMA_VERSION and add a new entry
+    to SCHEMA_HEADER_FIELDS rather than editing the current one in place.
+    """
+    write_dir = _fresh_dir("rankings_artifact_pinned_schema")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    files = list(rankings_dir.glob("*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text())
+
+    written_fields = frozenset(payload["header"].keys())
+    pinned_fields = SCHEMA_HEADER_FIELDS[SCHEMA_VERSION]
+    assert written_fields == pinned_fields, (
+        f"writer header drift from SCHEMA_VERSION={SCHEMA_VERSION}: "
+        f"added={sorted(written_fields - pinned_fields)}, "
+        f"removed={sorted(pinned_fields - written_fields)}. "
+        "Bump SCHEMA_VERSION and add a new entry in SCHEMA_HEADER_FIELDS."
+    )
+
+
+def test_evaluate_rankings_unknown_schema_version_raises():
+    """An unknown schema_version is a hard reject (independent of workrb_version)."""
+    write_dir = _fresh_dir("rankings_artifact_schema_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    _hand_edit_header(rankings_dir, schema_version=999)
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_schema_read")
+    with pytest.raises(RankingsArtifactInvalid, match="schema_version"):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def test_evaluate_rankings_version_mismatch_warns_but_proceeds():
+    """workrb_version mismatch only logs a warning; metrics still computed."""
+    write_dir = _fresh_dir("rankings_artifact_version_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    _hand_edit_header(rankings_dir, workrb_version="0.0.0-test-fixture")
+
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    capture = _Capture(level=logging.WARNING)
+    rankings_logger = logging.getLogger("workrb.rankings")
+    rankings_logger.addHandler(capture)
+    try:
+        tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+        read_output = _fresh_dir("rankings_artifact_version_read")
+        replay = workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+    finally:
+        rankings_logger.removeHandler(capture)
+
+    assert any("0.0.0-test-fixture" in r.getMessage() for r in records)
+    assert "Tiny Ranking Task" in replay.task_results

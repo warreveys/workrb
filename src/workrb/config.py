@@ -12,15 +12,36 @@ import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import yaml
 
+from workrb.rankings import SCHEMA_VERSION
 from workrb.results import BenchmarkResults
 from workrb.tasks.abstract import Task
 
+if TYPE_CHECKING:
+    from workrb.tasks.abstract.ranking_base import RankingDataset
+
 logger = logging.getLogger(__name__)
+
+
+def _get_workrb_version() -> str:
+    try:
+        return _pkg_version("workrb")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def rankings_filename(task_name: str, dataset_id: str) -> str:
+    """Filename used for the artifact of one ``(task, dataset_id)`` pair."""
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_name).strip("_")
+    safe_dataset = re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_")
+    return f"{safe_task}__{safe_dataset}.json"
 
 
 @dataclass
@@ -147,40 +168,65 @@ class BenchmarkConfig:
 
     def get_task_rankings_path(self, task_name: str, dataset_id: str) -> Path:
         """Get the output path for one task/dataset ranking artifact."""
-        safe_task_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_name).strip("_")
-        safe_dataset_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_")
-        filename = f"{safe_task_name}__{safe_dataset_id}.json"
-        return self.get_rankings_dir() / filename
+        return self.get_rankings_dir() / rankings_filename(task_name, dataset_id)
 
     def save_rankings_artifact(
         self,
         task_name: str,
         dataset_id: str,
-        scores: dict[str, dict[str, float]],
-        num_queries: int,
-        num_targets: int,
+        split: str,
+        dataset: "RankingDataset",
+        prediction_matrix: np.ndarray,
     ) -> Path:
-        """Save ranking scores for one dataset as a JSON artifact.
+        """Save the prediction matrix for one ``(task, dataset_id)`` as a JSON artifact.
 
-        The on-disk shape mirrors the ground-truth schema:
-        ``{model_id: {task_id: {language: {num_queries, num_targets, scores}}}}``
-        where ``scores`` is ``{query_text: {target_text: score}}``. One file is
-        written per ``(task, dataset_id)`` so individual datasets can be loaded
-        without parsing the whole benchmark; consumers wanting a unified view
-        can merge files by deep-updating their nested dicts.
+        Schema:
+        ``{"header": {...metadata...}, "scores": {q_idx: {t_idx: score}}}``
+        Query and target keys are positional indices (stringified, since JSON
+        object keys must be strings); the dataset's row order at the pinned
+        workrb version is the implicit ID source. Zero scores are omitted so
+        sparse models stay compact; consumers treat missing targets as 0.
         """
+        workrb_version = _get_workrb_version()
+
+        num_queries, num_targets = prediction_matrix.shape
+        if num_queries != len(dataset.query_texts):
+            raise ValueError(
+                f"prediction_matrix has {num_queries} rows but dataset has "
+                f"{len(dataset.query_texts)} queries"
+            )
+        if num_targets != len(dataset.target_space):
+            raise ValueError(
+                f"prediction_matrix has {num_targets} cols but dataset has "
+                f"{len(dataset.target_space)} targets"
+            )
+
         rankings_path = self.get_task_rankings_path(task_name=task_name, dataset_id=dataset_id)
         rankings_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            self.model_name: {
-                task_name: {
-                    dataset_id: {
-                        "num_queries": num_queries,
-                        "num_targets": num_targets,
-                        "scores": scores,
-                    }
-                }
+
+        scores: dict[str, dict[str, float]] = {}
+        matrix = prediction_matrix.tolist()
+        for q_idx, row in enumerate(matrix):
+            scores[str(q_idx)] = {
+                str(t_idx): float(score) for t_idx, score in enumerate(row) if score != 0
             }
+
+        payload = {
+            "header": {
+                "schema_version": SCHEMA_VERSION,
+                "workrb_version": workrb_version,
+                "model_name": self.model_name,
+                "task_name": task_name,
+                "dataset_id": dataset_id,
+                "split": split,
+                "num_queries": int(num_queries),
+                "num_targets": int(num_targets),
+                "first_query_text": dataset.query_texts[0],
+                "last_query_text": dataset.query_texts[-1],
+                "first_target_text": dataset.target_space[0],
+                "last_target_text": dataset.target_space[-1],
+            },
+            "scores": scores,
         }
         with open(rankings_path, "w") as f:
             json.dump(payload, f, indent=2)

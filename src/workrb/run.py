@@ -9,12 +9,20 @@ import logging
 import time
 from collections import Counter
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
-from workrb.config import BenchmarkConfig
+from workrb.config import BenchmarkConfig, _get_workrb_version, rankings_filename
 from workrb.logging import setup_logger
 from workrb.metrics.reporting import format_results
 from workrb.models.base import ModelInterface
+from workrb.rankings import (
+    RankingsArtifactInvalid,
+    RankingsArtifactMissing,
+    load_rankings_artifact,
+    materialize_prediction_matrix,
+    validate_header,
+)
 from workrb.results import (
     BenchmarkMetadata,
     BenchmarkResults,
@@ -198,6 +206,209 @@ def evaluate_multiple_models(
             raise e
 
     return all_results
+
+
+def evaluate_rankings(
+    rankings_dir: str | Path,
+    tasks: Sequence[Task],
+    output_folder: str,
+    metrics: dict[str, list[str]] | None = None,
+    description: str = "",
+    language_aggregation_mode: LanguageAggregationMode = LanguageAggregationMode.MONOLINGUAL_ONLY,
+    execution_mode: ExecutionMode = ExecutionMode.LAZY,
+) -> BenchmarkResults:
+    """Compute benchmark metrics by replaying saved ranking artifacts.
+
+    No model is required. ``rankings_dir`` is expected to be the
+    ``<output_folder>/rankings/<model_name>/`` directory produced by a
+    previous ``evaluate(..., save_rankings=True)`` run, or by an external
+    submission that wrote the same schema.
+
+    Args:
+        rankings_dir: Directory containing per-``(task, dataset_id)`` JSON
+            artifacts produced by :meth:`BenchmarkConfig.save_rankings_artifact`.
+        tasks: Tasks to score. Non-ranking tasks are skipped with a warning.
+        output_folder: Where to write ``results.json``, ``config.yaml``, and
+            ``checkpoint.json`` (same layout as :func:`evaluate`).
+        metrics: Optional dict mapping task names to custom metrics lists.
+        description: Description for the benchmark run.
+        language_aggregation_mode: How per-language results should be grouped
+            in the returned ``BenchmarkResults``.
+        execution_mode: ``LAZY`` skips datasets incompatible with the chosen
+            aggregation mode, ``ALL`` scores everything for which an artifact
+            exists.
+
+    Returns
+    -------
+        ``BenchmarkResults`` populated from the artifacts.
+
+    Raises
+    ------
+        RankingsArtifactMissing: An expected artifact is not on disk.
+        RankingsArtifactInvalid: An artifact's header does not match the live
+            dataset, or multiple model_names are present in ``rankings_dir``.
+
+    Notes
+    -----
+    Cross-version replay (an artifact produced by a different ``workrb_version``)
+    is supported and is in fact the main reason this entry point exists: it
+    lets you recompute metrics after metric definitions change without rerunning
+    the model. Such a version drift only logs a warning. The real safety net
+    is :func:`workrb.rankings.validate_header`'s structural and canary checks,
+    which catch any change to dataset construction (deduplication,
+    postprocessing, source data) and raise :class:`RankingsArtifactInvalid`.
+    An unknown ``schema_version`` is a hard reject regardless of workrb
+    version.
+    """
+    rankings_dir = Path(rankings_dir)
+    if not rankings_dir.is_dir():
+        raise FileNotFoundError(
+            f"rankings_dir does not exist or is not a directory: {rankings_dir}"
+        )
+
+    model_name = _peek_model_name(rankings_dir)
+
+    config = BenchmarkConfig(
+        model_name=model_name,
+        task_configs=[task.get_task_config() for task in tasks],
+        languages=sorted({lang.value for task in tasks for lang in task.languages}),
+        custom_metrics=metrics,
+        output_folder=output_folder,
+        description=description,
+    )
+
+    if execution_mode == ExecutionMode.LAZY:
+        dataset_ids_to_evaluate = _get_dataset_ids_to_evaluate(tasks, language_aggregation_mode)
+    else:
+        dataset_ids_to_evaluate = {task.name: list(task.dataset_ids) for task in tasks}
+
+    key_metrics_by_task_group = {task.task_group.value: task.default_metrics for task in tasks}
+    results = BenchmarkResults(
+        task_results={},
+        metadata=BenchmarkMetadata(
+            model_name=model_name,
+            total_evaluation_time=0.0,
+            timestamp=time.time(),
+            num_tasks=len(tasks),
+            languages=_get_all_languages(tasks),
+            resumed_from_checkpoint=False,
+            language_aggregation_mode=language_aggregation_mode.value,
+        ),
+        key_metrics_by_task_group=key_metrics_by_task_group,
+    )
+
+    running_version = _get_workrb_version()
+    start_time_benchmark = time.time()
+    logger.info(f"Replaying rankings from {rankings_dir} (model: {model_name})")
+
+    for task in tasks:
+        if not isinstance(task, RankingTask):
+            logger.warning(
+                "Skipping task '%s': evaluate_rankings only supports RankingTask.", task.name
+            )
+            continue
+
+        scoped = dataset_ids_to_evaluate.get(task.name, [])
+        if not scoped:
+            continue
+
+        if task.name not in results.task_results:
+            results.task_results[task.name] = TaskResults(
+                metadata=TaskResultMetadata(
+                    task_group=task.task_group.value,
+                    task_type=task.task_type.value,
+                    label_type=task.label_type.value,
+                    description=task.description,
+                    split=task.split.value,
+                ),
+                datasetid_results={},
+            )
+
+        logger.info(f"{'=' * 60}")
+        logger.info(f"Scoring task: {task.name}")
+
+        for dataset_id in scoped:
+            path = rankings_dir / rankings_filename(task.name, dataset_id)
+            if not path.exists():
+                raise RankingsArtifactMissing(path, task.name, dataset_id)
+
+            header, scores = load_rankings_artifact(path)
+            if header.get("model_name") != model_name:
+                raise RankingsArtifactInvalid(
+                    path,
+                    f"model_name mismatch with sibling artifacts: header has "
+                    f"'{header.get('model_name')}', expected '{model_name}'",
+                )
+            dataset = task.datasets[dataset_id]
+            validate_header(
+                header=header,
+                dataset=dataset,
+                task_name=task.name,
+                dataset_id=dataset_id,
+                split=task.split.value,
+                path=path,
+                running_workrb_version=running_version,
+            )
+
+            start_time_eval = time.time()
+            prediction_matrix = materialize_prediction_matrix(
+                scores=scores,
+                num_queries=header["num_queries"],
+                num_targets=header["num_targets"],
+            )
+            task_metrics = metrics.get(task.name) if metrics else None
+            metrics_dict = task.compute_metrics_from_prediction_matrix(
+                prediction_matrix=prediction_matrix,
+                dataset_id=dataset_id,
+                metrics=task_metrics,
+            )
+            evaluation_time = time.time() - start_time_eval
+
+            logger.info(f"* {dataset_id} ({task.get_size_oneliner(dataset_id)})")
+            _record_dataset_result(
+                results=results,
+                config=config,
+                task=task,
+                dataset_id=dataset_id,
+                metrics_dict=metrics_dict,
+                evaluation_time=evaluation_time,
+            )
+
+    results.metadata.total_evaluation_time = time.time() - start_time_benchmark
+    config.save_final_result_artifacts(results)
+
+    logger.info(f"{'=' * 60}")
+    logger.info("✓ evaluate_rankings COMPLETE")
+    logger.info(f"Total time: {results.metadata.total_evaluation_time:.2f}s")
+    logger.info(
+        format_results(
+            results,
+            display_per_task=False,
+            display_per_task_group=False,
+            display_per_language=False,
+            display_overall=True,
+            language_aggregation_mode=language_aggregation_mode,
+        )
+    )
+    logger.info(f"{'=' * 60}")
+    return results
+
+
+def _peek_model_name(rankings_dir: Path) -> str:
+    """Read ``model_name`` from the first artifact in ``rankings_dir``.
+
+    All artifacts in one directory must agree on ``model_name``; later
+    artifacts that disagree raise :class:`RankingsArtifactInvalid` when
+    they are loaded for scoring.
+    """
+    json_files = sorted(rankings_dir.glob("*.json"))
+    if not json_files:
+        raise FileNotFoundError(f"No ranking artifacts (*.json) found in {rankings_dir}")
+    header, _ = load_rankings_artifact(json_files[0])
+    model_name = header.get("model_name")
+    if not model_name:
+        raise RankingsArtifactInvalid(json_files[0], "header missing 'model_name'")
+    return model_name
 
 
 def get_tasks_overview(
@@ -494,17 +705,12 @@ def _run_pending_work(
                         dataset_id=dataset_id,
                         metrics=task_metrics,
                     )
-                    dataset = task.datasets[dataset_id]
                     rankings_path = config.save_rankings_artifact(
                         task_name=task.name,
                         dataset_id=dataset_id,
-                        scores=_build_scores(
-                            query_texts=dataset.query_texts,
-                            target_space=dataset.target_space,
-                            prediction_matrix=prediction_matrix,
-                        ),
-                        num_queries=prediction_matrix.shape[0],
-                        num_targets=prediction_matrix.shape[1],
+                        split=task.split.value,
+                        dataset=task.datasets[dataset_id],
+                        prediction_matrix=prediction_matrix,
                     )
                     logger.info(f"\tSaved ranking scores to: {rankings_path}")
                 else:
@@ -513,26 +719,14 @@ def _run_pending_work(
                     )
                 evaluation_time = time.time() - start_time_eval
 
-                # Store results
-                dataset_languages = task.get_dataset_languages(dataset_id)
-                results.task_results[task.name].datasetid_results[dataset_id] = MetricsResult(
-                    evaluation_time=evaluation_time,
+                _record_dataset_result(
+                    results=results,
+                    config=config,
+                    task=task,
+                    dataset_id=dataset_id,
                     metrics_dict=dataset_results,
-                    input_languages=sorted(
-                        lang.value for lang in dataset_languages.input_languages
-                    ),
-                    output_languages=sorted(
-                        lang.value for lang in dataset_languages.output_languages
-                    ),
+                    evaluation_time=evaluation_time,
                 )
-
-                # Save incremental results to checkpoint
-                if config:
-                    config.save_results_checkpoint(results)
-
-                # Show key metrics
-                key_metric = task.default_metrics[0]
-                logger.info(f"\t{key_metric}: {dataset_results[key_metric]:.3f}")
                 run_idx += 1
             except Exception as e:
                 logger.error(f"Error: {e}")
@@ -542,21 +736,29 @@ def _run_pending_work(
     return results
 
 
-def _build_scores(
-    query_texts: list[str],
-    target_space: list[str],
-    prediction_matrix: Any,
-) -> dict[str, dict[str, float]]:
-    """Build nested ``{query_text: {target_text: score}}`` from a prediction matrix.
+def _record_dataset_result(
+    results: BenchmarkResults,
+    config: BenchmarkConfig,
+    task: Task,
+    dataset_id: str,
+    metrics_dict: dict[str, float],
+    evaluation_time: float,
+) -> None:
+    """Attach a per-dataset metrics result, checkpoint, and log the key metric.
 
-    Zero scores are omitted so sparse models (e.g. BM25) stay compact;
-    consumers should treat a missing target as a score of 0.
+    Shared between :func:`evaluate` and :func:`evaluate_rankings` so both paths
+    produce identical ``BenchmarkResults`` bookkeeping.
     """
-    matrix = prediction_matrix.tolist()
-    scores: dict[str, dict[str, float]] = {}
-    for q_idx, query_text in enumerate(query_texts):
-        row = matrix[q_idx]
-        scores[query_text] = {
-            target_space[t_idx]: score for t_idx, score in enumerate(row) if score != 0
-        }
-    return scores
+    dataset_languages = task.get_dataset_languages(dataset_id)
+    results.task_results[task.name].datasetid_results[dataset_id] = MetricsResult(
+        evaluation_time=evaluation_time,
+        metrics_dict=metrics_dict,
+        input_languages=sorted(lang.value for lang in dataset_languages.input_languages),
+        output_languages=sorted(lang.value for lang in dataset_languages.output_languages),
+    )
+
+    if config:
+        config.save_results_checkpoint(results)
+
+    key_metric = task.default_metrics[0]
+    logger.info(f"\t{key_metric}: {metrics_dict[key_metric]:.3f}")

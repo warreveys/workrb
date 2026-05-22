@@ -113,6 +113,7 @@ Make a pull request (PR) from your fork into the main branch of WorkRB, followin
         - [ ] Code follows project style guidelines
         - [ ] Documentation updated
         - [ ] No new warnings introduced
+        - [ ] If the rankings artifact schema changed: bumped SCHEMA_VERSION in workrb/rankings.py and updated SUPPORTED_SCHEMA_VERSIONS
         ```
 
 ### 4. Review Process
