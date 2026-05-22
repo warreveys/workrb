@@ -184,8 +184,11 @@ class BenchmarkConfig:
         ``{"header": {...metadata...}, "scores": {q_idx: {t_idx: score}}}``
         Query and target keys are positional indices (stringified, since JSON
         object keys must be strings); the dataset's row order at the pinned
-        workrb version is the implicit ID source. Zero scores are omitted so
-        sparse models stay compact; consumers treat missing targets as 0.
+        workrb version is the implicit ID source.
+
+        Sparsity convention: any score that equals exactly ``0.0`` is omitted
+        from the row, and consumers materialize missing ``(q, t)`` entries as
+        ``0.0`` (see :func:`workrb.rankings.materialize_prediction_matrix`).
         """
         workrb_version = _get_workrb_version()
 

@@ -93,10 +93,9 @@ def evaluate(
     )
 
     # Determine which datasets are in scope for this run
-    if execution_mode == ExecutionMode.LAZY:
-        dataset_ids_to_evaluate = _get_dataset_ids_to_evaluate(tasks, language_aggregation_mode)
-    else:
-        dataset_ids_to_evaluate = {task.name: list(task.dataset_ids) for task in tasks}
+    dataset_ids_to_evaluate = _get_dataset_ids_to_evaluate(
+        tasks, language_aggregation_mode, execution_mode
+    )
 
     pending_work = _filter_pending_work(pending_work, dataset_ids_to_evaluate)
     total_evaluations = sum(len(dids) for dids in dataset_ids_to_evaluate.values())
@@ -277,10 +276,9 @@ def evaluate_rankings(
         description=description,
     )
 
-    if execution_mode == ExecutionMode.LAZY:
-        dataset_ids_to_evaluate = _get_dataset_ids_to_evaluate(tasks, language_aggregation_mode)
-    else:
-        dataset_ids_to_evaluate = {task.name: list(task.dataset_ids) for task in tasks}
+    dataset_ids_to_evaluate = _get_dataset_ids_to_evaluate(
+        tasks, language_aggregation_mode, execution_mode
+    )
 
     key_metrics_by_task_group = {task.task_group.value: task.default_metrics for task in tasks}
     results = BenchmarkResults(
@@ -485,19 +483,25 @@ def _get_all_languages(tasks: Sequence[Task]) -> list[str]:
 def _get_dataset_ids_to_evaluate(
     tasks: Sequence[Task],
     language_aggregation_mode: LanguageAggregationMode,
+    execution_mode: ExecutionMode,
 ) -> dict[str, list[str]]:
-    """Compute which dataset IDs per task are compatible with the aggregation mode.
+    """Compute which dataset IDs per task are in scope for this run.
 
-    This is the single source of truth for the run's scope when
-    ``execution_mode`` is ``LAZY``.  The returned dict drives the overview
-    display, total-evaluation count, and pending-work filtering.
+    Single source of truth for run scope. The returned dict drives the
+    overview display, total-evaluation count, and pending-work filtering.
+    Under ``ExecutionMode.ALL`` every dataset is in scope; under
+    ``ExecutionMode.LAZY`` datasets incompatible with the chosen
+    aggregation mode are dropped (and a warning is logged for each).
 
     Parameters
     ----------
     tasks : Sequence[Task]
         All tasks configured for this benchmark run.
     language_aggregation_mode : LanguageAggregationMode
-        The aggregation mode to check compatibility against.
+        The aggregation mode to check compatibility against (only used
+        when ``execution_mode`` is ``LAZY``).
+    execution_mode : ExecutionMode
+        ``LAZY`` filters incompatible datasets; ``ALL`` keeps everything.
 
     Returns
     -------
@@ -506,6 +510,9 @@ def _get_dataset_ids_to_evaluate(
         Tasks whose datasets are all incompatible still appear as keys
         with an empty list.
     """
+    if execution_mode == ExecutionMode.ALL:
+        return {task.name: list(task.dataset_ids) for task in tasks}
+
     if language_aggregation_mode == LanguageAggregationMode.SKIP_LANGUAGE_AGGREGATION:
         return {task.name: list(task.dataset_ids) for task in tasks}
 
