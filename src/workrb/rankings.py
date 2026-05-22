@@ -20,18 +20,30 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Current on-disk schema version for ranking artifacts.
+#
+# Bumped when the JSON shape itself changes (field renames, new required
+# fields, restructuring of `scores`). Independent of ``workrb_version``:
+# a workrb release that does not change the schema keeps the same value.
 SCHEMA_VERSION = 1
-"""Current on-disk schema version for ranking artifacts.
 
-Bumped when the JSON shape itself changes (field renames, new required fields,
-restructuring of `scores`). Independent of ``workrb_version``: a workrb release
-that does not change the schema keeps the same ``SCHEMA_VERSION``.
-"""
-
+# Schema versions this reader can parse. Artifacts with any other
+# ``schema_version`` are hard-rejected by :func:`validate_header`.
 SUPPORTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1})
-"""Schema versions this reader can parse. Artifacts with any other
-``schema_version`` are hard-rejected by :func:`validate_header`."""
 
+# Pinned header field set per schema version.
+#
+# This is the source of truth that
+# :func:`workrb.config.BenchmarkConfig.save_rankings_artifact` must agree
+# with. A test (``test_writer_header_matches_pinned_schema``) compares
+# freshly written headers against this mapping; mismatch means the writer
+# changed without bumping :data:`SCHEMA_VERSION`. When evolving the schema:
+#
+# 1. Add a new entry ``SCHEMA_HEADER_FIELDS[N] = frozenset({...})``.
+# 2. Bump :data:`SCHEMA_VERSION` to ``N``.
+# 3. Decide whether to keep the old version in
+#    :data:`SUPPORTED_SCHEMA_VERSIONS` (back-compat) or drop it
+#    (force rewrite).
 SCHEMA_HEADER_FIELDS: dict[int, frozenset[str]] = {
     1: frozenset(
         {
@@ -50,18 +62,6 @@ SCHEMA_HEADER_FIELDS: dict[int, frozenset[str]] = {
         }
     ),
 }
-"""Pinned header field set per schema version.
-
-This is the source of truth that :func:`workrb.config.BenchmarkConfig.save_rankings_artifact`
-must agree with. A test (``test_writer_header_matches_pinned_schema``) compares
-freshly written headers against this mapping; mismatch means the writer changed
-without bumping :data:`SCHEMA_VERSION`. When evolving the schema:
-
-1. Add a new entry ``SCHEMA_HEADER_FIELDS[N] = frozenset({...})``.
-2. Bump :data:`SCHEMA_VERSION` to ``N``.
-3. Decide whether to keep the old version in :data:`SUPPORTED_SCHEMA_VERSIONS`
-   (back-compat) or drop it (force rewrite).
-"""
 
 
 class RankingsArtifactMissing(FileNotFoundError):
