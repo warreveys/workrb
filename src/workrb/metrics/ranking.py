@@ -28,16 +28,16 @@ def calculate_ranking_metrics(
         Metric names to compute.
     pos_label_relevance : list[list[float]] or None, optional
         Optional graded relevance per positive, aligned 1-to-1 with
-        ``pos_label_idxs``. When ``None``, every positive is treated as relevance 1.0
-        (binary fallback, identical to current behavior). Used by graded metrics
-        (``ndcg``); binary metrics (``map``, ``mrr``, ``recall@k``, ``hit@k``,
-        ``rp@k``) consult it only to apply ``binary_relevance_threshold``.
+        ``pos_label_idxs``. When ``None``, every positive is treated as relevance
+        1.0 (binary fallback). Used by graded metrics (``ndcg``); binary metrics
+        (``map``, ``mrr``, ``recall@k``, ``hit@k``, ``rp@k``) consult it only to
+        apply ``binary_relevance_threshold``.
     binary_relevance_threshold : float, optional
         Minimum graded relevance for an item to count as a positive for binary
         metrics. Items with relevance below this threshold are dropped from the
         binary positive set but still contribute to graded metrics. Ignored when
-        ``pos_label_relevance`` is ``None``. Defaults to ``1e-9``: any non-zero
-        grade counts, matching the current binary-only behavior.
+        ``pos_label_relevance`` is ``None``. Defaults to ``1e-9``, so any
+        non-zero grade counts as a positive.
 
     Returns
     -------
@@ -243,9 +243,16 @@ def _calculate_ndcg(
 ) -> float:
     """Calculate nDCG@K with the (2^rel - 1) gain and log2(i+2) discount.
 
+    This is the TREC / Järvelin-Kekäläinen exponential-gain formulation,
+    matching ``sklearn.metrics.ndcg_score(gain='exp')`` and ``pytrec_eval``.
+
+    Items whose index does not appear in ``pos_label_idxs[i]`` are treated
+    as grade 0 (unjudged / irrelevant) and contribute zero gain, following
+    the standard TREC qrels convention.
+
     When ``pos_label_relevance`` is None, every positive is treated as
-    relevance 1.0 (binary fallback). With binary positives the gain
-    ``(2^1 - 1) = 1`` matches the binary implementation exactly.
+    relevance 1.0 (binary fallback), so the gain reduces to ``(2^1 - 1) = 1``
+    per relevant item.
     """
     ndcg_scores = []
 

@@ -332,9 +332,17 @@ class RankingTask(Task):
         graded metrics such as ``ndcg@k``.
 
         Default is ``1e-9`` so any listed item with a non-zero grade counts
-        as a positive — equivalent to today's behavior where every entry in
-        ``target_indices`` is a positive. Override on the task to express
-        a stricter threshold (e.g. ``2.0`` on a 0-3 scale).
+        as a positive, which means a binary dataset and a graded dataset
+        where every listed item has grade > 0 produce the same binary metric
+        values. Override on the task to express a stricter threshold (e.g.
+        ``2.0`` on a ``{1, 2, 3}`` scale, keeping only secondary/primary).
+
+        Note that ``recall@k``'s denominator on a graded dataset is the
+        *thresholded* positive count, not the count of all listed items, so
+        raising the threshold both removes positives from the numerator and
+        shrinks the denominator. A graded dataset's binary numbers are
+        therefore not directly comparable to a fully-binary version of the
+        same data.
 
         Has no effect when ``target_relevance`` is ``None``.
         """
