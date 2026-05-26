@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import logging
+import math
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -64,6 +66,13 @@ SCHEMA_HEADER_FIELDS: dict[int, frozenset[str]] = {
 }
 
 
+def rankings_filename(task_name: str, dataset_id: str) -> str:
+    """Filename used for the artifact of one ``(task, dataset_id)`` pair."""
+    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_name).strip("_")
+    safe_dataset = re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_")
+    return f"{safe_task}__{safe_dataset}.json"
+
+
 class RankingsArtifactMissing(FileNotFoundError):
     """Raised when a needed ranking artifact file is not on disk."""
 
@@ -89,6 +98,9 @@ def load_rankings_artifact(path: Path) -> tuple[dict, dict[int, dict[int, float]
     """Load a ranking artifact and return ``(header, scores)`` with integer keys.
 
     JSON object keys are always strings, so both axes are cast back to ``int``.
+    Non-finite score values (``NaN``, ``+inf``, ``-inf``) are rejected: the
+    writer refuses to emit them, so their presence indicates a hand-edited or
+    corrupt artifact.
     """
     with open(path) as f:
         payload = json.load(f)
@@ -98,9 +110,19 @@ def load_rankings_artifact(path: Path) -> tuple[dict, dict[int, dict[int, float]
 
     header = payload["header"]
     raw_scores = payload["scores"]
-    scores: dict[int, dict[int, float]] = {
-        int(q): {int(t): float(s) for t, s in row.items()} for q, row in raw_scores.items()
-    }
+    scores: dict[int, dict[int, float]] = {}
+    for q, row in raw_scores.items():
+        q_idx = int(q)
+        parsed_row: dict[int, float] = {}
+        for t, s in row.items():
+            value = float(s)
+            if not math.isfinite(value):
+                raise RankingsArtifactInvalid(
+                    path,
+                    f"non-finite score at query_index={q_idx}, target_index={int(t)}: {value!r}",
+                )
+            parsed_row[int(t)] = value
+        scores[q_idx] = parsed_row
     return header, scores
 
 
@@ -109,10 +131,24 @@ def materialize_prediction_matrix(
     num_queries: int,
     num_targets: int,
 ) -> np.ndarray:
-    """Build a dense ``(num_queries, num_targets)`` matrix from sparse scores."""
+    """Build a dense ``(num_queries, num_targets)`` matrix from the score map.
+
+    Raises ``IndexError`` if any ``(q_idx, t_idx)`` falls outside the declared
+    shape. Callers are expected to have validated the header against the live
+    dataset first; this is a defensive backstop against malformed artifacts.
+    """
     matrix = np.zeros((num_queries, num_targets), dtype=np.float32)
     for q_idx, row in scores.items():
+        if not 0 <= q_idx < num_queries:
+            raise IndexError(
+                f"query_index {q_idx} out of bounds for num_queries={num_queries}"
+            )
         for t_idx, score in row.items():
+            if not 0 <= t_idx < num_targets:
+                raise IndexError(
+                    f"target_index {t_idx} out of bounds for num_targets={num_targets} "
+                    f"(at query_index={q_idx})"
+                )
             matrix[q_idx, t_idx] = score
     return matrix
 

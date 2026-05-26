@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from workrb.config import BenchmarkConfig, _get_workrb_version, rankings_filename
+from workrb.config import BenchmarkConfig, _get_workrb_version
 from workrb.logging import setup_logger
 from workrb.metrics.reporting import format_results
 from workrb.models.base import ModelInterface
@@ -21,6 +21,7 @@ from workrb.rankings import (
     RankingsArtifactMissing,
     load_rankings_artifact,
     materialize_prediction_matrix,
+    rankings_filename,
     validate_header,
 )
 from workrb.results import (
@@ -220,13 +221,17 @@ def evaluate_rankings(
 
     No model is required. ``rankings_dir`` is expected to be the
     ``<output_folder>/rankings/<model_name>/`` directory produced by a
-    previous ``evaluate(..., save_rankings=True)`` run, or by an external
-    submission that wrote the same schema.
+    previous ``evaluate(..., save_rankings=True)`` run.
+
+    Always rescores from scratch: any existing ``results.json`` or
+    ``checkpoint.json`` under ``output_folder`` is overwritten without
+    consulting it.
 
     Args:
         rankings_dir: Directory containing per-``(task, dataset_id)`` JSON
             artifacts produced by :meth:`BenchmarkConfig.save_rankings_artifact`.
-        tasks: Tasks to score. Non-ranking tasks are skipped with a warning.
+        tasks: Tasks to score. Must all be ``RankingTask`` instances; passing
+            any other task type raises ``ValueError``.
         output_folder: Where to write ``results.json``, ``config.yaml``, and
             ``checkpoint.json`` (same layout as :func:`evaluate`).
         metrics: Optional dict mapping task names to custom metrics lists.
@@ -243,7 +248,13 @@ def evaluate_rankings(
 
     Raises
     ------
-        RankingsArtifactMissing: An expected artifact is not on disk.
+        ValueError: ``tasks`` contains any non-``RankingTask`` entry.
+        FileNotFoundError: ``rankings_dir`` does not exist, or exists but
+            contains no ``*.json`` artifacts.
+        RankingsArtifactMissing: A specific ``(task, dataset_id)`` artifact
+            expected by the scoring loop is not on disk. Subclasses
+            ``FileNotFoundError``, so a single ``except FileNotFoundError``
+            catches both this and the directory-level case above.
         RankingsArtifactInvalid: An artifact's header does not match the live
             dataset, or multiple model_names are present in ``rankings_dir``.
 
@@ -265,7 +276,15 @@ def evaluate_rankings(
             f"rankings_dir does not exist or is not a directory: {rankings_dir}"
         )
 
-    model_name = _peek_model_name(rankings_dir)
+    non_ranking = [task.name for task in tasks if not isinstance(task, RankingTask)]
+    if non_ranking:
+        raise ValueError(
+            f"evaluate_rankings only supports RankingTask, got non-ranking tasks: "
+            f"{non_ranking}. Filter your task list before calling."
+        )
+    ranking_tasks: list[RankingTask] = [task for task in tasks if isinstance(task, RankingTask)]
+
+    model_name, source_workrb_version = _peek_artifact_origin(rankings_dir)
 
     config = BenchmarkConfig(
         model_name=model_name,
@@ -291,6 +310,7 @@ def evaluate_rankings(
             languages=_get_all_languages(tasks),
             resumed_from_checkpoint=False,
             language_aggregation_mode=language_aggregation_mode.value,
+            replayed_from_workrb_version=source_workrb_version,
         ),
         key_metrics_by_task_group=key_metrics_by_task_group,
     )
@@ -299,13 +319,7 @@ def evaluate_rankings(
     start_time_benchmark = time.time()
     logger.info(f"Replaying rankings from {rankings_dir} (model: {model_name})")
 
-    for task in tasks:
-        if not isinstance(task, RankingTask):
-            logger.warning(
-                "Skipping task '%s': evaluate_rankings only supports RankingTask.", task.name
-            )
-            continue
-
+    for task in ranking_tasks:
         scoped = dataset_ids_to_evaluate.get(task.name, [])
         if not scoped:
             continue
@@ -392,12 +406,14 @@ def evaluate_rankings(
     return results
 
 
-def _peek_model_name(rankings_dir: Path) -> str:
-    """Read ``model_name`` from the first artifact in ``rankings_dir``.
+def _peek_artifact_origin(rankings_dir: Path) -> tuple[str, str | None]:
+    """Read ``(model_name, workrb_version)`` from the first artifact in ``rankings_dir``.
 
     All artifacts in one directory must agree on ``model_name``; later
     artifacts that disagree raise :class:`RankingsArtifactInvalid` when
-    they are loaded for scoring.
+    they are loaded for scoring. ``workrb_version`` is informational and
+    surfaced in ``BenchmarkMetadata.replayed_from_workrb_version`` so the
+    replay's ``results.json`` records which version produced the scores.
     """
     json_files = sorted(rankings_dir.glob("*.json"))
     if not json_files:
@@ -406,7 +422,7 @@ def _peek_model_name(rankings_dir: Path) -> str:
     model_name = header.get("model_name")
     if not model_name:
         raise RankingsArtifactInvalid(json_files[0], "header missing 'model_name'")
-    return model_name
+    return model_name, header.get("workrb_version")
 
 
 def get_tasks_overview(

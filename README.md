@@ -227,11 +227,11 @@ Each JSON file has two top-level keys:
   plus four canary strings (`first_query_text`, `last_query_text`,
   `first_target_text`, `last_target_text`) used to detect silent dataset
   drift on replay.
-- `scores`: a sparse `{query_index: {target_index: score}}` mapping, with
+- `scores`: a `{query_index: {target_index: score}}` mapping, with
   keys as positional indices into the live dataset's `query_texts` /
-  `target_space` (stringified, as JSON requires string keys). Scores of
-  exactly `0.0` are omitted; consumers materialize missing entries as
-  `0.0`.
+  `target_space` (stringified, as JSON requires string keys). Every
+  `(query, target)` cell is stored. Non-finite values (`NaN`, `+inf`, `-inf`) are
+  rejected at write time.
 
 Once written, you can recompute metrics without rerunning the model by
 pointing `evaluate_rankings` at the model-scoped directory:

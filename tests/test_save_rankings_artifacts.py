@@ -83,10 +83,11 @@ class TinyDeterministicModel(ModelInterface):
         query_input_type: ModelInputType,
         target_input_type: ModelInputType,
     ) -> torch.Tensor:
-        # 2 queries x 3 targets, with one explicit zero to exercise sparsity
+        # 2 queries x 3 targets, including 0.0 and a negative score to confirm
+        # both roundtrip exactly (no sparsity).
         return torch.tensor(
             [
-                [0.1, 0.0, 0.3],
+                [0.1, 0.0, -0.3],
                 [0.4, 0.5, 0.6],
             ],
             dtype=torch.float32,
@@ -155,10 +156,11 @@ def test_evaluate_saves_rankings_artifact_with_new_schema():
 
     scores = payload["scores"]
     assert set(scores.keys()) == {"0", "1"}
-    # Row 0 has a zero on target index 1 (sparse omission)
-    assert set(scores["0"].keys()) == {"0", "2"}
+    # Every (q, t) cell is stored, including 0.0 and negatives.
+    assert set(scores["0"].keys()) == {"0", "1", "2"}
     assert scores["0"]["0"] == pytest.approx(0.1)
-    assert scores["0"]["2"] == pytest.approx(0.3)
+    assert scores["0"]["1"] == pytest.approx(0.0)
+    assert scores["0"]["2"] == pytest.approx(-0.3)
     assert set(scores["1"].keys()) == {"0", "1", "2"}
     assert scores["1"]["0"] == pytest.approx(0.4)
     assert scores["1"]["1"] == pytest.approx(0.5)
@@ -203,6 +205,12 @@ def test_evaluate_rankings_roundtrip_parity():
     assert set(replay_metrics.keys()) == set(write_metrics.keys())
     for key, value in write_metrics.items():
         assert replay_metrics[key] == pytest.approx(value)
+
+    # Replay records which workrb version wrote the source artifacts;
+    # the original evaluate() run leaves the field unset.
+    assert write_results["metadata"].get("replayed_from_workrb_version") is None
+    artifact_header = json.loads(next(rankings_dir.glob("*.json")).read_text())["header"]
+    assert replay.metadata.replayed_from_workrb_version == artifact_header["workrb_version"]
 
 
 def test_evaluate_rankings_missing_artifact_raises():
@@ -317,6 +325,75 @@ def test_evaluate_rankings_unknown_schema_version_raises():
     tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
     read_output = _fresh_dir("rankings_artifact_schema_read")
     with pytest.raises(RankingsArtifactInvalid, match="schema_version"):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def test_save_rankings_rejects_non_finite_scores():
+    """The writer refuses NaN/inf because JSON cannot represent them safely."""
+    import numpy as np
+
+    from workrb.config import BenchmarkConfig
+
+    dataset = TinyRankingTask(
+        split=DatasetSplit.TEST, languages=[Language.EN]
+    ).datasets["en"]
+    config = BenchmarkConfig(
+        model_name="tiny",
+        output_folder=str(_fresh_dir("rankings_artifact_non_finite_write")),
+    )
+    matrix = np.array([[0.1, float("nan"), 0.3], [0.4, 0.5, 0.6]], dtype=np.float32)
+    with pytest.raises(ValueError, match="non-finite"):
+        config.save_rankings_artifact(
+            task_name="Tiny Ranking Task",
+            dataset_id="en",
+            split="test",
+            dataset=dataset,
+            prediction_matrix=matrix,
+        )
+
+
+def test_evaluate_rankings_rejects_non_finite_scores_in_artifact():
+    """A hand-edited NaN in the artifact is rejected at load time."""
+    write_dir = _fresh_dir("rankings_artifact_non_finite_read")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    files = list(rankings_dir.glob("*.json"))
+    assert len(files) == 1
+    # Inject NaN by editing the parsed structure and re-emitting with
+    # allow_nan=True. json.load (used by the reader) accepts the non-standard
+    # NaN token, which is exactly what validate_header/load_rankings_artifact
+    # must catch.
+    payload = json.loads(files[0].read_text())
+    payload["scores"]["0"]["0"] = float("nan")
+    files[0].write_text(json.dumps(payload, allow_nan=True))
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_non_finite_read_out")
+    with pytest.raises(RankingsArtifactInvalid, match="non-finite"):
+        workrb.evaluate_rankings(
+            rankings_dir=rankings_dir,
+            tasks=tasks,
+            output_folder=str(read_output),
+        )
+
+
+def test_evaluate_rankings_rejects_out_of_bounds_target_index():
+    """A target_index outside [0, num_targets) is rejected with IndexError."""
+    write_dir = _fresh_dir("rankings_artifact_oob_write")
+    rankings_dir = _run_and_get_rankings_dir(write_dir)
+    files = list(rankings_dir.glob("*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text())
+    # num_targets is 3 in TinyRankingTask, so 999 is out of bounds.
+    payload["scores"]["0"]["999"] = 0.42
+    files[0].write_text(json.dumps(payload))
+
+    tasks = [TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN])]
+    read_output = _fresh_dir("rankings_artifact_oob_read")
+    with pytest.raises(IndexError, match="target_index 999"):
         workrb.evaluate_rankings(
             rankings_dir=rankings_dir,
             tasks=tasks,

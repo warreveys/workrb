@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import yaml
 
-from workrb.rankings import SCHEMA_VERSION
+from workrb.rankings import SCHEMA_VERSION, rankings_filename
 from workrb.results import BenchmarkResults
 from workrb.tasks.abstract import Task
 
@@ -35,13 +35,6 @@ def _get_workrb_version() -> str:
         return _pkg_version("workrb")
     except PackageNotFoundError:
         return "unknown"
-
-
-def rankings_filename(task_name: str, dataset_id: str) -> str:
-    """Filename used for the artifact of one ``(task, dataset_id)`` pair."""
-    safe_task = re.sub(r"[^A-Za-z0-9_.-]+", "_", task_name).strip("_")
-    safe_dataset = re.sub(r"[^A-Za-z0-9_.-]+", "_", dataset_id).strip("_")
-    return f"{safe_task}__{safe_dataset}.json"
 
 
 @dataclass
@@ -184,11 +177,12 @@ class BenchmarkConfig:
         ``{"header": {...metadata...}, "scores": {q_idx: {t_idx: score}}}``
         Query and target keys are positional indices (stringified, since JSON
         object keys must be strings); the dataset's row order at the pinned
-        workrb version is the implicit ID source.
+        workrb version is the implicit ID source. Every ``(q, t)`` cell is
+        stored.
 
-        Sparsity convention: any score that equals exactly ``0.0`` is omitted
-        from the row, and consumers materialize missing ``(q, t)`` entries as
-        ``0.0`` (see :func:`workrb.rankings.materialize_prediction_matrix`).
+        Non-finite scores (``NaN``, ``+inf``, ``-inf``) are rejected: standard
+        JSON cannot represent them, and silently coercing would corrupt the
+        artifact for downstream readers.
         """
         workrb_version = _get_workrb_version()
 
@@ -203,6 +197,14 @@ class BenchmarkConfig:
                 f"prediction_matrix has {num_targets} cols but dataset has "
                 f"{len(dataset.target_space)} targets"
             )
+        if not np.all(np.isfinite(prediction_matrix)):
+            bad = np.argwhere(~np.isfinite(prediction_matrix))
+            sample = bad[0]
+            raise ValueError(
+                f"prediction_matrix contains non-finite values (e.g. at "
+                f"query_index={int(sample[0])}, target_index={int(sample[1])}); "
+                "JSON cannot represent NaN/inf, refusing to write a corrupt artifact"
+            )
 
         rankings_path = self.get_task_rankings_path(task_name=task_name, dataset_id=dataset_id)
         rankings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -210,9 +212,7 @@ class BenchmarkConfig:
         scores: dict[str, dict[str, float]] = {}
         matrix = prediction_matrix.tolist()
         for q_idx, row in enumerate(matrix):
-            scores[str(q_idx)] = {
-                str(t_idx): float(score) for t_idx, score in enumerate(row) if score != 0
-            }
+            scores[str(q_idx)] = {str(t_idx): float(score) for t_idx, score in enumerate(row)}
 
         payload = {
             "header": {
@@ -232,7 +232,7 @@ class BenchmarkConfig:
             "scores": scores,
         }
         with open(rankings_path, "w") as f:
-            json.dump(payload, f, indent=2)
+            json.dump(payload, f, indent=2, allow_nan=False)
         logger.debug(f"Ranking artifact saved to {rankings_path}")
         return rankings_path
 
