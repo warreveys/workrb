@@ -61,6 +61,9 @@ class BenchmarkMetadata(BaseModel):
     languages: list[str]
     resumed_from_checkpoint: bool = False
     language_aggregation_mode: str = LanguageAggregationMode.MONOLINGUAL_ONLY.value
+    replayed_from_workrb_version: str | None = None
+    """workrb version that wrote the ranking artifacts when this run was
+    produced by :func:`workrb.evaluate_rankings`; ``None`` for normal runs."""
 
 
 class ResultTagString(BaseModel):

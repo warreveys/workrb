@@ -7,19 +7,34 @@ using unified BenchmarkResults storage for both checkpoints and final results.
 
 import json
 import logging
+import re
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import yaml
 
+from workrb.rankings import SCHEMA_VERSION, rankings_filename
 from workrb.results import BenchmarkResults
 from workrb.tasks.abstract import Task
 
+if TYPE_CHECKING:
+    from workrb.tasks.abstract.ranking_base import RankingDataset
+
 logger = logging.getLogger(__name__)
+
+
+def _get_workrb_version() -> str:
+    try:
+        return _pkg_version("workrb")
+    except PackageNotFoundError:
+        return "unknown"
 
 
 @dataclass
@@ -133,6 +148,93 @@ class BenchmarkConfig:
     def get_results_path(self) -> Path:
         """Get the path where final results should be saved."""
         return self.get_output_path() / "results.json"
+
+    def get_rankings_dir(self) -> Path:
+        """Get the directory where per-dataset ranking artifacts are saved.
+
+        Rankings are nested under a sanitized model-name directory so that
+        running multiple models into the same ``output_folder`` cannot clobber
+        each other's ranking files.
+        """
+        safe_model_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.model_name).strip("_")
+        return self.get_output_path() / "rankings" / safe_model_name
+
+    def get_task_rankings_path(self, task_name: str, dataset_id: str) -> Path:
+        """Get the output path for one task/dataset ranking artifact."""
+        return self.get_rankings_dir() / rankings_filename(task_name, dataset_id)
+
+    def save_rankings_artifact(
+        self,
+        task_name: str,
+        dataset_id: str,
+        split: str,
+        dataset: "RankingDataset",
+        prediction_matrix: np.ndarray,
+    ) -> Path:
+        """Save the prediction matrix for one ``(task, dataset_id)`` as a JSON artifact.
+
+        Schema:
+        ``{"header": {...metadata...}, "scores": {q_idx: {t_idx: score}}}``
+        Query and target keys are positional indices (stringified, since JSON
+        object keys must be strings); the dataset's row order at the pinned
+        workrb version is the implicit ID source. Every ``(q, t)`` cell is
+        stored.
+
+        Non-finite scores (``NaN``, ``+inf``, ``-inf``) are rejected: standard
+        JSON cannot represent them, and silently coercing would corrupt the
+        artifact for downstream readers.
+        """
+        workrb_version = _get_workrb_version()
+
+        num_queries, num_targets = prediction_matrix.shape
+        if num_queries != len(dataset.query_texts):
+            raise ValueError(
+                f"prediction_matrix has {num_queries} rows but dataset has "
+                f"{len(dataset.query_texts)} queries"
+            )
+        if num_targets != len(dataset.target_space):
+            raise ValueError(
+                f"prediction_matrix has {num_targets} cols but dataset has "
+                f"{len(dataset.target_space)} targets"
+            )
+        if not np.all(np.isfinite(prediction_matrix)):
+            bad = np.argwhere(~np.isfinite(prediction_matrix))
+            sample = bad[0]
+            raise ValueError(
+                f"prediction_matrix contains non-finite values (e.g. at "
+                f"query_index={int(sample[0])}, target_index={int(sample[1])}); "
+                "JSON cannot represent NaN/inf, refusing to write a corrupt artifact"
+            )
+
+        rankings_path = self.get_task_rankings_path(task_name=task_name, dataset_id=dataset_id)
+        rankings_path.parent.mkdir(parents=True, exist_ok=True)
+
+        scores: dict[str, dict[str, float]] = {}
+        matrix = prediction_matrix.tolist()
+        for q_idx, row in enumerate(matrix):
+            scores[str(q_idx)] = {str(t_idx): float(score) for t_idx, score in enumerate(row)}
+
+        payload = {
+            "header": {
+                "schema_version": SCHEMA_VERSION,
+                "workrb_version": workrb_version,
+                "model_name": self.model_name,
+                "task_name": task_name,
+                "dataset_id": dataset_id,
+                "split": split,
+                "num_queries": int(num_queries),
+                "num_targets": int(num_targets),
+                "first_query_text": dataset.query_texts[0],
+                "last_query_text": dataset.query_texts[-1],
+                "first_target_text": dataset.target_space[0],
+                "last_target_text": dataset.target_space[-1],
+            },
+            "scores": scores,
+        }
+        with open(rankings_path, "w") as f:
+            json.dump(payload, f, indent=2, allow_nan=False)
+        logger.debug(f"Ranking artifact saved to {rankings_path}")
+        return rankings_path
 
     def has_checkpoint(self) -> bool:
         """Check if a checkpoint exists."""

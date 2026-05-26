@@ -60,6 +60,7 @@ results = workrb.evaluate(  # Returns BenchmarkResults (Pydantic model)
     model,
     tasks,
     output_folder="results/my_model",
+    save_rankings=False,  # Optional: store full per-target score arrays for ranking tasks
 )
 print(results)  # Benchmark/Per-task/Per-language metrics
 ```
@@ -209,6 +210,48 @@ results/my_model/
 ├── results.json          # Final results dump
 └── config.yaml           # Final benchmark configuration dump
 ```
+
+If you pass `save_rankings=True` to `evaluate`, WorkRB also writes per-task,
+per-dataset ranking score artifacts under a model-scoped subdirectory:
+
+```
+results/my_model/
+└── rankings/
+    └── <model_name>/
+        └── <task_name>__<dataset_id>.json
+```
+
+Each JSON file has two top-level keys:
+
+- `header`: identifies the artifact and pins it to a specific dataset
+  shape. Includes `schema_version`, `workrb_version`, `model_name`,
+  `task_name`, `dataset_id`, `split`, `num_queries`, `num_targets`,
+  plus four canary strings (`first_query_text`, `last_query_text`,
+  `first_target_text`, `last_target_text`) used to detect silent dataset
+  drift on replay.
+- `scores`: a `{query_index: {target_index: score}}` mapping, with
+  keys as positional indices into the live dataset's `query_texts` /
+  `target_space` (stringified, as JSON requires string keys). Every
+  `(query, target)` cell is stored. Non-finite values (`NaN`, `+inf`, `-inf`) are
+  rejected at write time.
+
+Once written, you can recompute metrics without rerunning the model by
+pointing `evaluate_rankings` at the model-scoped directory:
+
+```python
+results = workrb.evaluate_rankings(
+    rankings_dir="results/my_model/rankings/my_model",
+    tasks=tasks,
+    output_folder="results/my_model_replay",
+)
+```
+
+This is the recommended way to re-score after a metric definition has
+changed (e.g. a new ranking metric is added in a workrb release): replay
+is cheap, the model never runs again, and `validate_header` rejects any
+artifact whose dataset shape no longer matches the live one. A
+`workrb_version` mismatch only logs a warning; an unknown
+`schema_version` is a hard reject.
 
 To load & parse results from a run:
 

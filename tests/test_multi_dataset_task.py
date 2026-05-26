@@ -22,6 +22,7 @@ from workrb.run import _get_dataset_ids_to_evaluate
 from workrb.tasks import ESCOJob2SkillRanking, RankingDataset
 from workrb.types import (
     DatasetLanguages,
+    ExecutionMode,
     Language,
     LanguageAggregationMode,
     get_language_grouping_key,
@@ -476,7 +477,9 @@ class TestGetDatasetIdsToEvaluate:
                 ),
             },
         )
-        result = _get_dataset_ids_to_evaluate([task], LanguageAggregationMode.MONOLINGUAL_ONLY)
+        result = _get_dataset_ids_to_evaluate(
+            [task], LanguageAggregationMode.MONOLINGUAL_ONLY, ExecutionMode.LAZY
+        )
         assert result == {"task1": ["en"]}
 
     def test_group_input_keeps_crosslingual_singleton_input(self):
@@ -495,7 +498,7 @@ class TestGetDatasetIdsToEvaluate:
             },
         )
         result = _get_dataset_ids_to_evaluate(
-            [task], LanguageAggregationMode.CROSSLINGUAL_GROUP_INPUT_LANGUAGES
+            [task], LanguageAggregationMode.CROSSLINGUAL_GROUP_INPUT_LANGUAGES, ExecutionMode.LAZY
         )
         assert result == {"task1": ["en_de"]}
 
@@ -531,7 +534,9 @@ class TestGetDatasetIdsToEvaluate:
                 ),
             },
         )
-        result = _get_dataset_ids_to_evaluate([task], LanguageAggregationMode.MONOLINGUAL_ONLY)
+        result = _get_dataset_ids_to_evaluate(
+            [task], LanguageAggregationMode.MONOLINGUAL_ONLY, ExecutionMode.LAZY
+        )
         assert result == {"melo_task": ["en", "de"]}
 
     def test_group_input_mixed_task_keeps_singleton_input(self):
@@ -562,13 +567,15 @@ class TestGetDatasetIdsToEvaluate:
             },
         )
         result = _get_dataset_ids_to_evaluate(
-            [task], LanguageAggregationMode.CROSSLINGUAL_GROUP_INPUT_LANGUAGES
+            [task], LanguageAggregationMode.CROSSLINGUAL_GROUP_INPUT_LANGUAGES, ExecutionMode.LAZY
         )
         assert result == {"melo_task": ["en", "en_de", "fr_de"]}
 
     def test_no_tasks(self):
         """Empty task list returns empty dict."""
-        result = _get_dataset_ids_to_evaluate([], LanguageAggregationMode.MONOLINGUAL_ONLY)
+        result = _get_dataset_ids_to_evaluate(
+            [], LanguageAggregationMode.MONOLINGUAL_ONLY, ExecutionMode.LAZY
+        )
         assert result == {}
 
     def test_all_datasets_incompatible(self):
@@ -586,7 +593,9 @@ class TestGetDatasetIdsToEvaluate:
                 ),
             },
         )
-        result = _get_dataset_ids_to_evaluate([task], LanguageAggregationMode.MONOLINGUAL_ONLY)
+        result = _get_dataset_ids_to_evaluate(
+            [task], LanguageAggregationMode.MONOLINGUAL_ONLY, ExecutionMode.LAZY
+        )
         assert result == {"task1": []}
 
     def test_skip_language_aggregation_keeps_all(self):
@@ -609,7 +618,7 @@ class TestGetDatasetIdsToEvaluate:
             },
         )
         result = _get_dataset_ids_to_evaluate(
-            [task], LanguageAggregationMode.SKIP_LANGUAGE_AGGREGATION
+            [task], LanguageAggregationMode.SKIP_LANGUAGE_AGGREGATION, ExecutionMode.LAZY
         )
         assert result == {"task1": ["en", "en_de", "multi"]}
 
