@@ -10,6 +10,7 @@ from workrb.tasks import (
     ESCOJob2SkillRanking,
     ESCOSkill2JobRanking,
     ESCOSkillNormRanking,
+    HouseGradedSkillExtractRanking,
     HouseSkillExtractRanking,
     JobBERTJobNormRanking,
     RankingDataset,
@@ -49,6 +50,7 @@ def test_task_ranking_imports():
     assert isinstance(ESCOSkill2JobRanking.__name__, str)
     assert isinstance(ESCOSkillNormRanking.__name__, str)
     assert isinstance(HouseSkillExtractRanking.__name__, str)
+    assert isinstance(HouseGradedSkillExtractRanking.__name__, str)
     assert isinstance(JobBERTJobNormRanking.__name__, str)
     assert isinstance(SkillMatch1kSkillSimilarityRanking.__name__, str)
     assert isinstance(TechSkillExtractRanking.__name__, str)

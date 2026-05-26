@@ -18,6 +18,7 @@ from workrb.tasks.ranking.melo import MELORanking
 from workrb.tasks.ranking.mels import MELSRanking
 from workrb.tasks.ranking.skill2job import ESCOSkill2JobRanking
 from workrb.tasks.ranking.skill_extraction import (
+    HouseGradedSkillExtractRanking,
     HouseSkillExtractRanking,
     SkillSkapeExtractRanking,
     SkillXLSkillExtractRanking,
@@ -31,6 +32,7 @@ __all__ = [
     "ESCOJob2SkillRanking",
     "ESCOSkill2JobRanking",
     "ESCOSkillNormRanking",
+    "HouseGradedSkillExtractRanking",
     "HouseSkillExtractRanking",
     "JobBERTJobNormRanking",
     "JobTitleSimilarityRanking",

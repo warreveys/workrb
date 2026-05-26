@@ -19,6 +19,7 @@ from .ranking.melo import MELORanking
 from .ranking.mels import MELSRanking
 from .ranking.skill2job import ESCOSkill2JobRanking
 from .ranking.skill_extraction import (
+    HouseGradedSkillExtractRanking,
     HouseSkillExtractRanking,
     SkillSkapeExtractRanking,
     SkillXLSkillExtractRanking,
@@ -46,6 +47,7 @@ __all__ = [
     "JobTitleSimilarityRanking",
     "MELORanking",
     "MELSRanking",
+    "HouseGradedSkillExtractRanking",
     "HouseSkillExtractRanking",
     "TechSkillExtractRanking",
     "TechWolfSkillExtractRanking",

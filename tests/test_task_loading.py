@@ -10,6 +10,7 @@ from workrb.tasks import (
     ESCOJob2SkillRanking,
     ESCOSkill2JobRanking,
     ESCOSkillNormRanking,
+    HouseGradedSkillExtractRanking,
     HouseSkillExtractRanking,
     JobBERTJobNormRanking,
     JobTitleSimilarityRanking,
@@ -50,6 +51,7 @@ def test_ranking_tasks_init_en_splits():
         ("MELORanking", MELORanking),
         ("MELSRanking", MELSRanking),
         ("SkillExtractHouseRanking", HouseSkillExtractRanking),
+        ("SkillExtractHouseGradedRanking", HouseGradedSkillExtractRanking),
         ("SkillExtractTechRanking", TechSkillExtractRanking),
         ("SkillExtractSkillSkapeRanking", SkillSkapeExtractRanking),
         ("SkillSimilarityRanking", SkillMatch1kSkillSimilarityRanking),
@@ -60,6 +62,9 @@ def test_ranking_tasks_init_en_splits():
         "MELORanking",
         "MELSRanking",
     ]
+    tasks_with_only_val_set = [
+        "SkillExtractHouseGradedRanking",
+    ]
 
     results = {"success": [], "failures": []}
     languages = [Language.EN]
@@ -69,6 +74,8 @@ def test_ranking_tasks_init_en_splits():
     for split in splits:
         for task_name, task_class in ranking_tasks:
             if split != DatasetSplit.TEST and task_name in tasks_with_only_test_set:
+                continue
+            if split != DatasetSplit.VAL and task_name in tasks_with_only_val_set:
                 continue
             nb_total += 1
             try:

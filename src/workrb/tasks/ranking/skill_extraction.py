@@ -2,6 +2,7 @@
 
 import pandas as pd
 from datasets import Dataset, load_dataset
+from huggingface_hub import hf_hub_download
 
 from workrb.data.esco import ESCO
 from workrb.registry import register_task
@@ -347,6 +348,155 @@ class SkillXLSkillExtractRanking(BaseESCOSkillExtractRanking):
   pages={133596-133608},
   keywords={Taxonomy;Contrastive learning;Training;Annotations;Benchmark testing;Training data;Large language models;Computational efficiency;Accuracy;Terminology;Labor market analysis;text encoders;skill extraction;job title normalization},
   doi={10.1109/ACCESS.2025.3589147}
+}
+"""
+
+
+@register_task()
+class HouseGradedSkillExtractRanking(BaseESCOSkillExtractRanking):
+    """Skill Extraction from HOUSE Dataset with Graded Relevance.
+
+    Re-annotates the sentences from ``TechWolf/skill-extraction-house`` against
+    the full ESCO v1.1.0 skill taxonomy with a 0-4 relevance scale, following the
+    BEIR layout (``queries``, ``corpus``, ``qrels``).
+
+    Score scale (per the dataset card):
+        0 - totally unrelated
+        1 - domain is correct, plausible in broader context but not in the sentence
+        2 - could be recommended, granularity makes it not core to the query
+        3 - strongly relevant, more implied than explicitly demonstrated
+        4 - explicitly demonstrated or requested
+
+    Only the validation split is annotated at this stage. The test split will
+    be released alongside the workrb.ai challenge results.
+    """
+
+    orig_esco_version = "1.1.0"
+
+    def __init__(self, esco_version: str = "1.1.0", **kwargs):
+        self.esco_version = esco_version
+        super().__init__(hf_name="TechWolf/skill-extraction-house-with-relevancy", **kwargs)
+
+    @property
+    def default_metrics(self) -> list[str]:
+        """Default metrics include nDCG to leverage the graded labels.
+
+        ``ndcg`` without a cutoff scores the full ranking (k = |target_space|).
+        """
+        return ["ndcg", "ndcg@5", "ndcg@10", "map", "rp@10", "mrr"]
+
+    def load_dataset(self, dataset_id: str, split: DatasetSplit) -> RankingDataset:
+        """Load BEIR-style graded annotations and convert to a RankingDataset.
+
+        The corpus is the full ESCO v1.1.0 skill taxonomy (URIs in ``corpus-id``).
+        Only the validation split has been released so far.
+        """
+        if split != DatasetSplit.VAL:
+            raise ValueError(
+                f"Split '{split}' not supported for {type(self).__name__}: only the "
+                f"validation split is annotated at this stage."
+            )
+
+        language = Language(dataset_id)
+
+        # BEIR layout: fetch the queries and qrels parquet files directly. The
+        # repo's README config points at "data/queries/..." paths that don't
+        # exist; hf_hub_download bypasses that and reads the actual files.
+        queries_path = hf_hub_download(
+            self.hf_name, filename="queries/validation.parquet", repo_type="dataset"
+        )
+        qrels_path = hf_hub_download(
+            self.hf_name, filename="qrels/validation.parquet", repo_type="dataset"
+        )
+        queries_df = pd.read_parquet(queries_path)
+        qrels_df = pd.read_parquet(qrels_path)
+
+        # Drop grade-0 rows: they are explicit "irrelevant" annotations and map
+        # to implicit grade 0 (items absent from target_indices).
+        qrels_df = qrels_df[qrels_df["score"] > 0].reset_index(drop=True).copy()
+
+        # Map corpus URIs to ESCO preferred labels, mirroring the binary tasks
+        # so the target_space is the deterministic ESCO skill vocabulary.
+        original_esco = ESCO(version=self.orig_esco_version, language=Language.EN)
+        original_skill_uris = original_esco.get_skills_uris()
+        original_uris_to_skill = {v: k for k, v in original_skill_uris.items()}
+
+        if self.esco_version != self.orig_esco_version or language != Language.EN:
+            target_esco = ESCO(version=self.esco_version, language=language)
+            target_skill_uris = target_esco.get_skills_uris()
+            target_uris_to_skill = {v: k for k, v in target_skill_uris.items()}
+            uri_to_label = {
+                uri: target_uris_to_skill[uri]
+                for uri in original_uris_to_skill
+                if uri in target_uris_to_skill
+            }
+        else:
+            uri_to_label = original_uris_to_skill
+
+        qrels_df["label"] = qrels_df["corpus-id"].map(uri_to_label)
+        qrels_df = qrels_df[qrels_df["label"].notna()].reset_index(drop=True).copy()
+
+        # Load ESCO skill vocabulary for target version/language.
+        esco = ESCO(version=self.esco_version, language=language)
+        skill_vocab = esco.get_skills_vocabulary()
+        skill2label = {skill: i for i, skill in enumerate(skill_vocab)}
+
+        # Attach the sentence text and the target index for every (query, skill, score).
+        id_to_query = dict(zip(queries_df["_id"], queries_df["text"], strict=True))
+        qrels_df["sentence"] = qrels_df["query-id"].map(id_to_query)
+        qrels_df["target_idx"] = qrels_df["label"].map(skill2label)
+        # Some labels may not be present in the target language vocabulary.
+        qrels_df = qrels_df[qrels_df["target_idx"].notna()].reset_index(drop=True).copy()
+        qrels_df["target_idx"] = qrels_df["target_idx"].astype(int)
+
+        grouped = qrels_df.groupby("sentence")
+        filtered_queries: list[str] = []
+        filtered_indices: list[list[int]] = []
+        filtered_relevance: list[list[float]] = []
+        for sentence, group in grouped:
+            filtered_queries.append(str(sentence))
+            filtered_indices.append(group["target_idx"].tolist())
+            filtered_relevance.append([float(s) for s in group["score"].tolist()])
+
+        return RankingDataset(
+            query_texts=filtered_queries,
+            target_indices=filtered_indices,
+            target_space=skill_vocab,
+            dataset_id=dataset_id,
+            target_relevance=filtered_relevance,
+        )
+
+    @property
+    def name(self) -> str:
+        """Skill extraction HOUSE graded task name."""
+        return "Skill Extraction House Graded"
+
+    @property
+    def description(self) -> str:
+        """Skill extraction HOUSE graded task description."""
+        return (
+            "Extract skills from general text descriptions in the HOUSE subset of CAREER, "
+            "with graded 0-4 relevance against the full ESCO v1.1.0 taxonomy."
+        )
+
+    @property
+    def citation(self) -> str:
+        """Skill extraction HOUSE graded task citation."""
+        return """@inproceedings{decorte2022design,
+  articleno    = {{4}},
+  author       = {{Decorte, Jens-Joris and Van Hautte, Jeroen and Deleu, Johannes and Develder, Chris and Demeester, Thomas}},
+  booktitle    = {{Proceedings of the 2nd Workshop on Recommender Systems for Human Resources (RecSys-in-HR 2022)}},
+  editor       = {{Kaya, Mesut and Bogers, Toine and Graus, David and Mesbah, Sepideh and Johnson, Chris and Gutiérrez, Francisco}},
+  isbn         = {{9781450398565}},
+  issn         = {{1613-0073}},
+  language     = {{eng}},
+  location     = {{Seatle, USA}},
+  pages        = {{7}},
+  publisher    = {{CEUR}},
+  title        = {{Design of negative sampling strategies for distantly supervised skill extraction}},
+  url          = {{https://ceur-ws.org/Vol-3218/RecSysHR2022-paper_4.pdf}},
+  volume       = {{3218}},
+  year         = {{2022}},
 }
 """
 
