@@ -476,4 +476,3 @@ class RankingTask(Task):
             pos_label_relevance=dataset.target_relevance,
             binary_relevance_threshold=self.binary_relevance_threshold,
         )
-     

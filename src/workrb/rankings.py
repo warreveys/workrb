@@ -140,9 +140,7 @@ def materialize_prediction_matrix(
     matrix = np.zeros((num_queries, num_targets), dtype=np.float32)
     for q_idx, row in scores.items():
         if not 0 <= q_idx < num_queries:
-            raise IndexError(
-                f"query_index {q_idx} out of bounds for num_queries={num_queries}"
-            )
+            raise IndexError(f"query_index {q_idx} out of bounds for num_queries={num_queries}")
         for t_idx, score in row.items():
             if not 0 <= t_idx < num_targets:
                 raise IndexError(

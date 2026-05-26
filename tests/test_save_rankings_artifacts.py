@@ -338,9 +338,7 @@ def test_save_rankings_rejects_non_finite_scores():
 
     from workrb.config import BenchmarkConfig
 
-    dataset = TinyRankingTask(
-        split=DatasetSplit.TEST, languages=[Language.EN]
-    ).datasets["en"]
+    dataset = TinyRankingTask(split=DatasetSplit.TEST, languages=[Language.EN]).datasets["en"]
     config = BenchmarkConfig(
         model_name="tiny",
         output_folder=str(_fresh_dir("rankings_artifact_non_finite_write")),
