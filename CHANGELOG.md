@@ -6,6 +6,10 @@
   task on the HOUSE subset of CAREER, re-annotated against the full ESCO v1.1.0
   taxonomy with a 0-4 score scale (HF: ``TechWolf/skill-extraction-house-with-relevancy``,
   BEIR layout, validation split only).
+- ``TechGradedSkillExtractRanking``: graded-relevance skill-extraction ranking
+  task on the TECH subset of CAREER, re-annotated against the full ESCO v1.1.0
+  taxonomy with a 0-4 score scale (HF: ``TechWolf/skill-extraction-tech-with-relevancy``,
+  BEIR layout, validation split only).
 - graded relevance support for ranking metrics: ``RankingDataset`` accepts an
   optional ``target_relevance`` field aligned 1-to-1 with ``target_indices``.
   ``ndcg@k`` uses a (2^rel - 1) gain when graded labels are provided; binary

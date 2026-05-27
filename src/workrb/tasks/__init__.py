@@ -23,6 +23,7 @@ from .ranking.skill_extraction import (
     HouseSkillExtractRanking,
     SkillSkapeExtractRanking,
     SkillXLSkillExtractRanking,
+    TechGradedSkillExtractRanking,
     TechSkillExtractRanking,
     TechWolfSkillExtractRanking,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "MELSRanking",
     "HouseGradedSkillExtractRanking",
     "HouseSkillExtractRanking",
+    "TechGradedSkillExtractRanking",
     "TechSkillExtractRanking",
     "TechWolfSkillExtractRanking",
     "SkillSkapeExtractRanking",

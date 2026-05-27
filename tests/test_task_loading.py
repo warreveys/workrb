@@ -18,6 +18,7 @@ from workrb.tasks import (
     MELSRanking,
     SkillMatch1kSkillSimilarityRanking,
     SkillSkapeExtractRanking,
+    TechGradedSkillExtractRanking,
     TechSkillExtractRanking,
 )
 from workrb.tasks.abstract.base import DatasetSplit, Language, TaskType
@@ -53,6 +54,7 @@ def test_ranking_tasks_init_en_splits():
         ("SkillExtractHouseRanking", HouseSkillExtractRanking),
         ("SkillExtractHouseGradedRanking", HouseGradedSkillExtractRanking),
         ("SkillExtractTechRanking", TechSkillExtractRanking),
+        ("SkillExtractTechGradedRanking", TechGradedSkillExtractRanking),
         ("SkillExtractSkillSkapeRanking", SkillSkapeExtractRanking),
         ("SkillSimilarityRanking", SkillMatch1kSkillSimilarityRanking),
     ]
@@ -64,6 +66,7 @@ def test_ranking_tasks_init_en_splits():
     ]
     tasks_with_only_val_set = [
         "SkillExtractHouseGradedRanking",
+        "SkillExtractTechGradedRanking",
     ]
 
     results = {"success": [], "failures": []}

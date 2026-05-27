@@ -17,6 +17,7 @@ from workrb.tasks import (
     RankingTask,
     SkillMatch1kSkillSimilarityRanking,
     Task,
+    TechGradedSkillExtractRanking,
     TechSkillExtractRanking,
     ranking,
 )
@@ -54,6 +55,7 @@ def test_task_ranking_imports():
     assert isinstance(JobBERTJobNormRanking.__name__, str)
     assert isinstance(SkillMatch1kSkillSimilarityRanking.__name__, str)
     assert isinstance(TechSkillExtractRanking.__name__, str)
+    assert isinstance(TechGradedSkillExtractRanking.__name__, str)
 
     print("✓ Successfully imported ranking task classes")
 
