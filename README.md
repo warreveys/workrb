@@ -1,6 +1,6 @@
 <div align="center">
 
-# WorkRB
+# FORK of WorkRB for the RecSys-HR-2026 challenge
 
 <h3 style="border-bottom: none;">Easy benchmarking of AI progress in the work domain</h3>
 
